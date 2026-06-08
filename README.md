@@ -3,14 +3,13 @@
 Custom drop-in firmware work for reviving original Awair Element units by
 replacing the EMW3165 radio-module firmware.
 
-The product has an STM32F103 sensor/display MCU and an EMW3165 module containing
-an STM32F411 plus Broadcom Wi-Fi radio. The long-term deliverable is firmware for
-the EMW3165 that:
+What's inside of the Element?
 
-- joins local Wi-Fi without the Awair cloud;
-- speaks the stock Awair UART protocol to the F103;
-- publishes sensor readings locally, eventually for Home Assistant;
-- keeps the original display/score behavior working.
+- ST STM32F103VET6 — sensor board MCU
+- ST STM32F103RBT6 — front panel daughterboard MCU
+- Glead ZYM-BI201 — BLE 4.0 (TI CC2540, originally used for BLE GATT pairing)
+- MXCHIP EMW3165 — WiFi module (has STM32F411 + Broadcom WiFi inside, the main interest of this repo)
+- a bunch of sensors (Telaire T6703, Sharp GP2Y10, FIS QS-01, SHT30)
 
 ## Repository Layout
 
@@ -60,6 +59,8 @@ rewair.local_bridge-AWAIR-FreeRTOS-LwIP-SDIO
 
 ## Flash
 
+Located on the opposite side of EMW3165 are 4 test points. TP103/TP104 is the debug USART, TP80/TP81 is SWD.
+
 ```sh
 scripts/flash_local_bridge_probe_rs.zsh
 ```
@@ -77,3 +78,5 @@ See [docs/status.md](docs/status.md). Short version: Wi-Fi, DCT credential
 persistence, DHCP, SNTP, time sync, and basic F103 frame TX/RX are in
 place. The current unresolved issue is that under WICED the F103 emits
 `REDY/TEST`, then often stops sending `SENS`.
+
+Without Wi-Fi connected the sensor board reliably (more or less) sends data to the radio module every 5 seconds. 
