@@ -1,0 +1,26 @@
+.DS_Store
+
+# Build outputs
+build/
+*.elf
+*.bin
+*.map
+*.hex
+*.lst
+*.o
+*.d
+
+# Probe/debug logs
+*.log
+*.network-request
+*.network-response
+
+# Local lab artifacts
+private/
+captures/
+artifacts/
+*.gpr
+*.rep/
+
+# External SDKs should stay outside this repo.
+third_party/
