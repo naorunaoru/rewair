@@ -19,3 +19,6 @@ typedef struct
 void rewair_settings_load( rewair_settings_t* out );
 int  rewair_settings_save( const rewair_settings_t* s );
 void rewair_settings_apply_to_state( const rewair_settings_t* s );
+
+/* Resets settings to firmware defaults, saves to DCT, and returns them via *out. */
+int  rewair_settings_reset_defaults( rewair_settings_t* out );

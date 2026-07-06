@@ -156,7 +156,7 @@ static void sensor_send_frame( const char cmd[4], char** fields, uint32_t field_
 static void send_sensor_boot_context( void );
 static void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year );
 static void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds );
-static void send_time_context( uint32_t utc_seconds );
+void send_time_context( uint32_t utc_seconds );
 static void send_disp_clock_canary( void );
 static void sensor_reset_cycle( void );
 
@@ -456,6 +456,14 @@ static int ssid_eq_text( const wiced_ssid_t* ssid, const char* text )
     return memcmp( ssid->value, text, length ) == 0;
 }
 
+/* Compares two plain NUL-terminated SSID strings (e.g. rewair_status_t.ssid
+ * against a request's ssid), unlike ssid_eq_text which compares against a
+ * length-prefixed wiced_ssid_t. */
+static int ssid_eq_text_cstr( const char* a, const char* b )
+{
+    return cstr_eq( a, b );
+}
+
 const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text )
 {
     const wiced_scan_result_t* best = NULL;
@@ -711,7 +719,7 @@ static void wifi_print_saved_credentials( void )
     wiced_dct_read_unlock( wifi_config, WICED_FALSE );
 }
 
-static wiced_result_t wifi_clear_stored_credentials( void )
+wiced_result_t wifi_clear_stored_credentials( void )
 {
     platform_dct_wifi_config_t* wifi_config = NULL;
     wiced_result_t result;
@@ -779,9 +787,11 @@ static wiced_result_t wifi_store_ap_credentials( const wiced_ap_info_t* ap,
     return result;
 }
 
-static wiced_result_t wifi_join_command( const char* ssid_text, const char* pass_text,
-                                         wiced_security_t security, const wiced_scan_result_t* scan,
-                                         int force_security )
+static wiced_result_t wifi_join_command_ex( const char* ssid_text, const char* pass_text,
+                                            wiced_security_t security, const wiced_scan_result_t* scan,
+                                            int force_security, int store_to_dct,
+                                            wiced_ap_info_t* joined_ap_out, char joined_key_out[64],
+                                            uint32_t* joined_key_len_out )
 {
     wiced_ap_info_t ap;
     char security_key[64];
@@ -881,10 +891,382 @@ static wiced_result_t wifi_join_command( const char* ssid_text, const char* pass
     }
 
     wifi_print_status( );
-    wifi_store_ap_credentials( &ap, security_key, pass_len );
+    if ( store_to_dct != 0 )
+    {
+        wifi_store_ap_credentials( &ap, security_key, pass_len );
+    }
+    if ( joined_ap_out != NULL )
+    {
+        *joined_ap_out = ap;
+    }
+    if ( joined_key_out != NULL )
+    {
+        memcpy( joined_key_out, security_key, sizeof( security_key ) );
+    }
+    if ( joined_key_len_out != NULL )
+    {
+        *joined_key_len_out = pass_len;
+    }
     wifi_join_in_progress = 0u;
     network_after_ip_ready( );
     return WICED_SUCCESS;
+}
+
+static wiced_result_t wifi_join_command( const char* ssid_text, const char* pass_text,
+                                         wiced_security_t security, const wiced_scan_result_t* scan,
+                                         int force_security )
+{
+    return wifi_join_command_ex( ssid_text, pass_text, security, scan, force_security,
+                                 1 /* store_to_dct: preserve legacy console slot-0 behavior */,
+                                 NULL, NULL, NULL );
+}
+
+/* ---- multi-network DCT list management (Task 8, web API) ----
+ * These preserve existing stored_ap_list entries -- unlike wifi_store_ap_credentials
+ * (still used by the console "join" path), which wipes the whole list and writes
+ * slot 0 only. */
+
+wiced_result_t wifi_list_add( const char* ssid, const char* pass )
+{
+    const wiced_scan_result_t* scan;
+    wiced_security_t security = WICED_SECURITY_WPA2_MIXED_PSK;
+    wiced_ap_info_t joined_ap;
+    char joined_key[64];
+    uint32_t joined_key_len = 0u;
+    wiced_result_t result;
+    platform_dct_wifi_config_t* wifi_config = NULL;
+    int free_slot = -1;
+    int match_slot = -1;
+    int i;
+
+    if ( ssid == NULL || cstr_len( ssid ) == 0u || cstr_len( ssid ) > SSID_NAME_SIZE )
+    {
+        return WICED_BADARG;
+    }
+
+    scan = find_best_scan_result_for_ssid( ssid );
+    if ( scan == NULL && ( pass == NULL || cstr_len( pass ) == 0u ) )
+    {
+        security = WICED_SECURITY_OPEN;
+    }
+
+    /* Join first; only persist on success (mirrors wifi_join_command, but this
+     * variant does NOT let the join path wipe-and-write slot 0 -- we do our own
+     * find-existing-or-first-free-slot write below with the actual joined AP
+     * details). */
+    result = wifi_join_command_ex( ssid, pass != NULL ? pass : "", security, scan,
+                                   scan != NULL ? 0 : 1 /* force_security only when we guessed */,
+                                   0 /* store_to_dct */,
+                                   &joined_ap, joined_key, &joined_key_len );
+    if ( result != WICED_SUCCESS )
+    {
+        return result;
+    }
+
+    if ( joined_ap.SSID.length == 0u || joined_ap.SSID.length > SSID_NAME_SIZE ||
+         joined_key_len > SECURITY_KEY_SIZE )
+    {
+        return WICED_BADARG;
+    }
+
+    result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
+                                  0, sizeof( *wifi_config ) );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+        return result;
+    }
+
+    for ( i = 0; i < (int)CONFIG_AP_LIST_SIZE; i++ )
+    {
+        const wiced_config_ap_entry_t* entry = &wifi_config->stored_ap_list[i];
+
+        if ( entry->details.SSID.length == 0u || entry->details.SSID.length > SSID_NAME_SIZE )
+        {
+            if ( free_slot < 0 )
+            {
+                free_slot = i;
+            }
+            continue;
+        }
+        if ( ssid_eq_text( &entry->details.SSID, ssid ) != 0 )
+        {
+            match_slot = i;
+            break;
+        }
+    }
+
+    if ( match_slot < 0 && free_slot < 0 )
+    {
+        wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        printf( "[wifi] stored_ap_list full; cannot add \"%s\"\n", ssid );
+        return WICED_ERROR;
+    }
+
+    {
+        int slot = match_slot >= 0 ? match_slot : free_slot;
+        wiced_config_ap_entry_t* stored = &wifi_config->stored_ap_list[slot];
+
+        stored->details = joined_ap;
+        stored->security_key_length = (uint8_t)joined_key_len;
+        memset( stored->security_key, 0, sizeof( stored->security_key ) );
+        if ( joined_key_len != 0u )
+        {
+            memcpy( stored->security_key, joined_key, joined_key_len );
+        }
+        wifi_config->device_configured = WICED_TRUE;
+
+        result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
+        wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+
+        if ( result == WICED_SUCCESS )
+        {
+            printf( "[wifi] saved credentials to DCT slot %d (%s)\n", slot,
+                    match_slot >= 0 ? "updated" : "new" );
+        }
+        else
+        {
+            printf( "[wifi] DCT write failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+        }
+    }
+
+    return result;
+}
+
+wiced_result_t wifi_list_remove( const char* ssid )
+{
+    platform_dct_wifi_config_t* wifi_config = NULL;
+    wiced_result_t result;
+    int slot = -1;
+    int i;
+    rewair_status_t st;
+    int was_active;
+
+    if ( ssid == NULL || cstr_len( ssid ) == 0u )
+    {
+        return WICED_BADARG;
+    }
+
+    result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
+                                  0, sizeof( *wifi_config ) );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+        return result;
+    }
+
+    for ( i = 0; i < (int)CONFIG_AP_LIST_SIZE; i++ )
+    {
+        const wiced_config_ap_entry_t* entry = &wifi_config->stored_ap_list[i];
+        if ( entry->details.SSID.length != 0u && entry->details.SSID.length <= SSID_NAME_SIZE &&
+             ssid_eq_text( &entry->details.SSID, ssid ) != 0 )
+        {
+            slot = i;
+            break;
+        }
+    }
+
+    if ( slot < 0 )
+    {
+        wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        return WICED_NOT_FOUND;
+    }
+
+    memset( &wifi_config->stored_ap_list[slot], 0, sizeof( wifi_config->stored_ap_list[slot] ) );
+    if ( slot + 1 < (int)CONFIG_AP_LIST_SIZE )
+    {
+        memmove( &wifi_config->stored_ap_list[slot],
+                 &wifi_config->stored_ap_list[slot + 1],
+                 sizeof( wifi_config->stored_ap_list[0] ) * (uint32_t)( (int)CONFIG_AP_LIST_SIZE - slot - 1 ) );
+        memset( &wifi_config->stored_ap_list[CONFIG_AP_LIST_SIZE - 1], 0,
+                sizeof( wifi_config->stored_ap_list[0] ) );
+    }
+
+    {
+        int any_left = 0;
+        for ( i = 0; i < (int)CONFIG_AP_LIST_SIZE; i++ )
+        {
+            if ( wifi_config->stored_ap_list[i].details.SSID.length != 0u )
+            {
+                any_left = 1;
+                break;
+            }
+        }
+        wifi_config->device_configured = any_left != 0 ? WICED_TRUE : WICED_FALSE;
+    }
+
+    result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
+    wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi] DCT write failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+        return result;
+    }
+
+    rewair_state_snapshot( &st );
+    was_active = st.wifi_mode == 0u && ssid_eq_text_cstr( st.ssid, ssid );
+    if ( was_active != 0 )
+    {
+        wiced_network_down( WICED_STA_INTERFACE );
+        rewair_state_wifi_drop( );
+    }
+
+    printf( "[wifi] removed \"%s\" from stored_ap_list\n", ssid );
+    return WICED_SUCCESS;
+}
+
+wiced_result_t wifi_list_reorder( char order[][33], uint32_t count )
+{
+    platform_dct_wifi_config_t* wifi_config = NULL;
+    wiced_config_ap_entry_t saved[CONFIG_AP_LIST_SIZE];
+    wiced_result_t result;
+    uint32_t saved_count = 0u;
+    uint32_t i;
+    uint32_t j;
+
+    if ( order == NULL || count == 0u || count > CONFIG_AP_LIST_SIZE )
+    {
+        return WICED_BADARG;
+    }
+
+    result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
+                                  0, sizeof( *wifi_config ) );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+        return result;
+    }
+
+    memset( saved, 0, sizeof( saved ) );
+    for ( i = 0u; i < CONFIG_AP_LIST_SIZE; i++ )
+    {
+        const wiced_config_ap_entry_t* entry = &wifi_config->stored_ap_list[i];
+        if ( entry->details.SSID.length != 0u && entry->details.SSID.length <= SSID_NAME_SIZE )
+        {
+            saved[saved_count++] = *entry;
+        }
+    }
+
+    if ( count != saved_count )
+    {
+        wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        return WICED_BADARG;
+    }
+
+    /* Verify order[] is a permutation of the saved SSID set: each entry in
+     * `saved` must be matched by exactly one entry in `order`. */
+    {
+        uint8_t matched[CONFIG_AP_LIST_SIZE];
+        memset( matched, 0, sizeof( matched ) );
+
+        for ( i = 0u; i < count; i++ )
+        {
+            int found = 0;
+            for ( j = 0u; j < saved_count; j++ )
+            {
+                if ( matched[j] != 0u )
+                {
+                    continue;
+                }
+                if ( ssid_eq_text( &saved[j].details.SSID, order[i] ) != 0 )
+                {
+                    matched[j] = 1u;
+                    found = 1;
+                    break;
+                }
+            }
+            if ( found == 0 )
+            {
+                wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+                return WICED_BADARG;
+            }
+        }
+    }
+
+    /* Rebuild stored_ap_list in the requested order. */
+    memset( wifi_config->stored_ap_list, 0, sizeof( wifi_config->stored_ap_list ) );
+    for ( i = 0u; i < count; i++ )
+    {
+        for ( j = 0u; j < saved_count; j++ )
+        {
+            if ( ssid_eq_text( &saved[j].details.SSID, order[i] ) != 0 )
+            {
+                wifi_config->stored_ap_list[i] = saved[j];
+                break;
+            }
+        }
+    }
+
+    result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
+    wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi] DCT write failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+    }
+    return result;
+}
+
+int wifi_list_get( uint32_t index, char ssid_out[33], wiced_security_t* sec_out, int* connected_out )
+{
+    platform_dct_wifi_config_t* wifi_config = NULL;
+    rewair_status_t st;
+    uint32_t seen = 0u;
+    uint32_t i;
+    int found = 0;
+
+    if ( ssid_out == NULL )
+    {
+        return 0;
+    }
+
+    if ( wiced_dct_read_lock( (void**)&wifi_config, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
+                              0, sizeof( *wifi_config ) ) != WICED_SUCCESS )
+    {
+        return 0;
+    }
+
+    for ( i = 0u; i < CONFIG_AP_LIST_SIZE; i++ )
+    {
+        const wiced_config_ap_entry_t* entry = &wifi_config->stored_ap_list[i];
+        uint32_t n;
+
+        if ( entry->details.SSID.length == 0u || entry->details.SSID.length > SSID_NAME_SIZE )
+        {
+            continue;
+        }
+        if ( seen != index )
+        {
+            seen++;
+            continue;
+        }
+
+        n = entry->details.SSID.length;
+        memcpy( ssid_out, entry->details.SSID.value, n );
+        ssid_out[n] = '\0';
+        if ( sec_out != NULL )
+        {
+            *sec_out = entry->details.security;
+        }
+        found = 1;
+        break;
+    }
+
+    wiced_dct_read_unlock( wifi_config, WICED_FALSE );
+
+    if ( found == 0 )
+    {
+        return 0;
+    }
+
+    if ( connected_out != NULL )
+    {
+        rewair_state_snapshot( &st );
+        *connected_out = ( st.wifi_mode == 0u && ssid_eq_text_cstr( st.ssid, ssid_out ) ) ? 1 : 0;
+    }
+
+    return 1;
 }
 
 static void wifi_join_test_index_command( const char* index_text, const char* pass_text,
@@ -1758,7 +2140,7 @@ static void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seco
     printf( "[time] sent TIME %s offset_min=%d dst=%u\n", time_value, (int)offset_min, (unsigned)dst );
 }
 
-static void send_time_context( uint32_t utc_seconds )
+void send_time_context( uint32_t utc_seconds )
 {
     wall_time_t utc_wall;
 
@@ -1777,6 +2159,27 @@ static void send_disp_clock_canary( void )
 
     sensor_send_frame( "DISP", fields, (uint32_t)( sizeof( fields ) / sizeof( fields[0] ) ) );
     printf( "[nudge] DISP clock\n" );
+}
+
+wiced_result_t sensor_send_disp_mode( const char* mode )
+{
+    char* fields[] = { "mode", (char*)mode };
+
+    if ( !cstr_eq( mode, "score" ) && !cstr_eq( mode, "clock" ) && !cstr_eq( mode, "sensors" ) )
+    {
+        return WICED_BADARG;
+    }
+    sensor_send_frame( "DISP", fields, 2u );
+    return WICED_SUCCESS;
+}
+
+void sensor_apply_manual_time( uint32_t epoch )
+{
+    wiced_utc_time_ms_t ms = (wiced_utc_time_ms_t)epoch * 1000u;
+
+    wiced_time_set_utc_time_ms( &ms );
+    send_time_context( epoch );
+    rewair_state_set_time( epoch, 0u );
 }
 
 static void send_sensor_boot_context( void )

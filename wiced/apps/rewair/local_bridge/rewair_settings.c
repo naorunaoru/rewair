@@ -47,6 +47,18 @@ int rewair_settings_save( const rewair_settings_t* s )
     return result == WICED_SUCCESS ? 0 : -1;
 }
 
+int rewair_settings_reset_defaults( rewair_settings_t* out )
+{
+    rewair_settings_t defaults;
+
+    set_defaults( &defaults );
+    if ( out != NULL )
+    {
+        *out = defaults;
+    }
+    return rewair_settings_save( &defaults );
+}
+
 void rewair_settings_apply_to_state( const rewair_settings_t* s )
 {
     rewair_tz_rule_t rule;
