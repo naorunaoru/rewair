@@ -24,3 +24,4 @@ artifacts/
 
 # External SDKs should stay outside this repo.
 third_party/
+.superpowers/
