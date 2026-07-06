@@ -147,6 +147,7 @@ static int32_t api_scan_handler( const char* url, wiced_http_response_stream_t* 
     {
         const wiced_scan_result_t* r = console_scan_cache_get( i );
         char ssid[33];
+        char ssid_esc[66];
         uint32_t sl;
 
         if ( r == NULL )
@@ -156,8 +157,9 @@ static int32_t api_scan_handler( const char* url, wiced_http_response_stream_t* 
         sl = r->SSID.length <= 32u ? r->SSID.length : 32u;
         memcpy( ssid, r->SSID.value, sl );
         ssid[sl] = '\0';
+        (void)rewair_json_escape_string( ssid, ssid_esc, sizeof( ssid_esc ) );
         n = snprintf( buf, sizeof( buf ), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"sec\":\"%s\"}",
-                      i == 0u ? "" : ",", ssid, (int)r->signal_strength, sec_name( r->security ) );
+                      i == 0u ? "" : ",", ssid_esc, (int)r->signal_strength, sec_name( r->security ) );
         if ( n > 0 )
         {
             wiced_http_response_stream_write( stream, buf, (uint32_t)n );

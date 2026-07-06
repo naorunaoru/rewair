@@ -65,6 +65,14 @@ int main( void )
     /* truncation reports failure */
     assert( rewair_json_status( &st, buf, 64u ) == -1 );
 
+    /* rewair_json_escape_string: quote and backslash escaping */
+    {
+        char esc[16];
+        uint32_t n = rewair_json_escape_string( "a\"b\\", esc, sizeof( esc ) );
+        assert( n == 6u );
+        assert( strcmp( esc, "a\\\"b\\\\" ) == 0 );
+    }
+
     printf( "test_status OK\n" );
     return 0;
 }

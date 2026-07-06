@@ -12,3 +12,7 @@ int rewair_req_get_string_array( const char* body, uint32_t len, const char* key
 /* ---- status serialization (Task 4) ---- */
 struct rewair_status;
 int rewair_json_status( const struct rewair_status* st, char* buf, uint32_t buf_size );
+
+/* Escapes src into dst as JSON string content ( " \\ -> escaped, ctrl -> space ).
+ * Returns bytes written (excl. NUL). dst always NUL-terminated if dst_size > 0. */
+uint32_t rewair_json_escape_string( const char* src, char* dst, uint32_t dst_size );

@@ -190,27 +190,44 @@ static void emit_raw( emit_t* e, const char* s )
     e->buf[e->pos] = '\0';
 }
 
-static void emit_str( emit_t* e, const char* key, const char* value )
+uint32_t rewair_json_escape_string( const char* src, char* dst, uint32_t dst_size )
 {
-    char esc[2] = { 0, 0 };
+    uint32_t o = 0u;
 
-    emit_raw( e, "\"" );
-    emit_raw( e, key );
-    emit_raw( e, "\":\"" );
-    while ( *value != '\0' )
+    if ( dst_size == 0u )
     {
-        char c = *value++;
+        return 0u;
+    }
+    while ( *src != '\0' && o + 1u < dst_size )
+    {
+        char c = *src++;
         if ( c == '"' || c == '\\' )
         {
-            emit_raw( e, "\\" );
+            if ( o + 2u >= dst_size )
+            {
+                break;
+            }
+            dst[o++] = '\\';
         }
         else if ( (unsigned char)c < 0x20u )
         {
             c = ' ';
         }
-        esc[0] = c;
-        emit_raw( e, esc );
+        dst[o++] = c;
     }
+    dst[o] = '\0';
+    return o;
+}
+
+static void emit_str( emit_t* e, const char* key, const char* value )
+{
+    char esc[160];
+
+    emit_raw( e, "\"" );
+    emit_raw( e, key );
+    emit_raw( e, "\":\"" );
+    (void)rewair_json_escape_string( value, esc, sizeof( esc ) );
+    emit_raw( e, esc );
     emit_raw( e, "\"" );
 }
 

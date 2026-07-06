@@ -127,6 +127,14 @@ static wiced_scan_result_t console_scan_cache[CONSOLE_SCAN_CACHE_MAX];
 static wiced_semaphore_t scan_done_semaphore;
 static uint32_t scan_semaphore_inited = 0u;
 static volatile uint32_t scan_in_progress = 0u;
+/* Benign-race guard between the console "scan" command (console thread) and
+ * /api/scan (HTTP worker thread): both would otherwise reset console_scan_cache
+ * and console_scan_cache_count concurrently and corrupt each other's results.
+ * This is not a strict mutex (no cheap atomics on this platform) -- it just
+ * prevents cache clobbering from concurrent scans; a rare TOCTOU sliver where
+ * both sides read 0 and proceed is acceptable since the worst case is one
+ * scan's results getting overwritten, not corrupted. */
+static volatile uint32_t scan_busy = 0u;
 static volatile uint32_t wifi_join_in_progress = 0u;
 static volatile uint32_t wifi_time_synced = 0u;
 static volatile uint32_t wifi_last_ntp_sync_ms = 0u;
@@ -553,6 +561,7 @@ static wiced_result_t console_scan_result_handler( wiced_scan_handler_result_t* 
                 scan_in_progress = 0u;
                 wiced_rtos_set_semaphore( &scan_done_semaphore );
             }
+            scan_busy = 0u;
         }
 
         free( malloced_scan_result );
@@ -565,6 +574,13 @@ static void wifi_scan_start( void )
 {
     wiced_result_t result;
 
+    if ( scan_busy != 0u )
+    {
+        printf( "[scan] busy, try again\n" );
+        return;
+    }
+    scan_busy = 1u;
+
     console_scan_count = 0u;
     console_scan_cache_count = 0u;
     memset( console_scan_cache, 0, sizeof( console_scan_cache ) );
@@ -573,6 +589,7 @@ static void wifi_scan_start( void )
     if ( result != WICED_SUCCESS )
     {
         printf( "[scan] failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
+        scan_busy = 0u;
     }
 }
 
@@ -583,6 +600,22 @@ uint32_t sensor_scan_blocking( void )
         wiced_rtos_init_semaphore( &scan_done_semaphore );
         scan_semaphore_inited = 1u;
     }
+
+    if ( scan_busy != 0u )
+    {
+        /* Console "scan" already owns the cache -- return the current (possibly
+         * stale) results rather than clobbering them; see scan_busy comment above. */
+        return console_scan_cache_count;
+    }
+    scan_busy = 1u;
+
+    /* Drain any semaphore signal left over from a prior scan that timed out
+     * after its completion callback finally landed -- otherwise this scan's
+     * wiced_rtos_get_semaphore below would return immediately on stale state. */
+    while ( wiced_rtos_get_semaphore( &scan_done_semaphore, 0u ) == WICED_SUCCESS )
+    {
+    }
+
     console_scan_count = 0u;
     console_scan_cache_count = 0u;
     memset( console_scan_cache, 0, sizeof( console_scan_cache ) );
@@ -590,9 +623,20 @@ uint32_t sensor_scan_blocking( void )
     if ( wiced_wifi_scan_networks( console_scan_result_handler, NULL ) != WICED_SUCCESS )
     {
         scan_in_progress = 0u;
+        scan_busy = 0u;
         return 0u;
     }
-    wiced_rtos_get_semaphore( &scan_done_semaphore, 6000u );
+    if ( wiced_rtos_get_semaphore( &scan_done_semaphore, 6000u ) != WICED_SUCCESS )
+    {
+        /* Timed out: clear scan_in_progress so a late completion callback does
+         * not pre-signal the semaphore for the NEXT scan, and release the
+         * busy guard so a subsequent scan is not blocked forever. On success,
+         * console_scan_result_handler's completion branch already cleared
+         * scan_busy. */
+        scan_in_progress = 0u;
+        scan_busy = 0u;
+        return console_scan_cache_count;
+    }
     return console_scan_cache_count;
 }
 
