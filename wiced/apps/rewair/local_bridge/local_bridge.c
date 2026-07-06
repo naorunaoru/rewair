@@ -79,6 +79,12 @@ static wiced_mutex_t sensor_uart_tx_mutex;
 /* Guards DCT wifi-section read/write critical sections only; never held
  * across joins, frame sends, or state-cache calls. */
 static wiced_mutex_t dct_wifi_mutex;
+/* Guards every external-sflash driver call (init/id/read/write/erase). The
+ * SDK's spi_flash/platform_spi stack has no locking of its own, and this
+ * handle is shared by the console thread and the HTTP worker thread. Scope
+ * is kept tight: locked immediately around each driver call, never held
+ * across console printf/parsing or HTTP response building. */
+static wiced_mutex_t sflash_mutex;
 static wiced_ring_buffer_t sensor_uart_rx_buffer;
 static uint8_t sensor_uart_rx_data[SENSOR_RX_BUFFER_SIZE];
 
@@ -164,7 +170,32 @@ void sensor_set_tz_rule( const rewair_tz_rule_t* rule )
 static sflash_handle_t rewair_sflash_handle;
 static uint32_t         rewair_sflash_inited = 0u;
 
-static int rewair_sflash_ensure_init( void )
+/* Device capacity: MX25L1606E is 2 MiB (16 Mbit). The SDK's sflash_read/write
+ * take a 24-bit device address and silently wrap past this -- addr+len must
+ * be checked by every caller (console commands and the debug route) before
+ * ever reaching the driver. */
+#define REWAIR_SFLASH_CAPACITY 0x200000u
+
+/* Returns 1 if [addr, addr+len) fits within the device, 0 otherwise. Also
+ * catches the addr+len overflow case (len so large it wraps uint32_t). */
+int rewair_sflash_bounds_ok( uint32_t addr, uint32_t len )
+{
+    if ( len == 0u )
+    {
+        return 0;
+    }
+    if ( addr >= REWAIR_SFLASH_CAPACITY )
+    {
+        return 0;
+    }
+    if ( len > REWAIR_SFLASH_CAPACITY - addr )
+    {
+        return 0;
+    }
+    return 1;
+}
+
+static int rewair_sflash_ensure_init_locked( void )
 {
     if ( rewair_sflash_inited != 0u )
     {
@@ -179,17 +210,36 @@ static int rewair_sflash_ensure_init( void )
     return 0;
 }
 
+/* Public wrapper: takes the mutex around the lazy-init path only. Exposed
+ * separately from the locked variant so callers that already hold
+ * sflash_mutex (none today) could reuse the inner call; everyone else should
+ * call this one. */
+int rewair_sflash_ensure_init( void )
+{
+    int rc;
+
+    wiced_rtos_lock_mutex( &sflash_mutex );
+    rc = rewair_sflash_ensure_init_locked( );
+    wiced_rtos_unlock_mutex( &sflash_mutex );
+    return rc;
+}
+
 /* Returns 0 on success with *out_id filled (3 bytes: manufacturer, memory
  * type, capacity -- e.g. c2 20 15 for the MX25L1606E), nonzero on failure. */
 int rewair_sflash_read_id( uint8_t out_id[3] )
 {
     device_id_t id;
+    int rc;
 
-    if ( rewair_sflash_ensure_init( ) != 0 )
+    wiced_rtos_lock_mutex( &sflash_mutex );
+    rc = rewair_sflash_ensure_init_locked( );
+    if ( rc == 0 )
     {
-        return -1;
+        rc = sflash_read_ID( &rewair_sflash_handle, &id );
     }
-    if ( sflash_read_ID( &rewair_sflash_handle, &id ) != 0 )
+    wiced_rtos_unlock_mutex( &sflash_mutex );
+
+    if ( rc != 0 )
     {
         return -1;
     }
@@ -199,19 +249,25 @@ int rewair_sflash_read_id( uint8_t out_id[3] )
     return 0;
 }
 
-/* Returns 0 on success, nonzero on failure. size is bounds-checked by callers
- * (console command and the dev-gated debug route both cap it). */
+/* Returns 0 on success, nonzero on failure. Callers MUST bounds-check addr+len
+ * against REWAIR_SFLASH_CAPACITY (rewair_sflash_bounds_ok) before calling --
+ * this function does not re-check, since both current callers (console
+ * command and the dev-gated debug route) already cap len <= 256 and validate
+ * addr themselves, and the driver's 24-bit address silently wraps rather than
+ * erroring. */
 int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size )
 {
-    if ( rewair_sflash_ensure_init( ) != 0 )
+    int rc;
+
+    wiced_rtos_lock_mutex( &sflash_mutex );
+    rc = rewair_sflash_ensure_init_locked( );
+    if ( rc == 0 )
     {
-        return -1;
+        rc = sflash_read( &rewair_sflash_handle, (unsigned long)addr, out, (unsigned int)size );
     }
-    if ( sflash_read( &rewair_sflash_handle, (unsigned long)addr, out, (unsigned int)size ) != 0 )
-    {
-        return -1;
-    }
-    return 0;
+    wiced_rtos_unlock_mutex( &sflash_mutex );
+
+    return ( rc == 0 ) ? 0 : -1;
 }
 
 static void network_after_ip_ready( void );
@@ -1525,6 +1581,12 @@ static void sflash_read_command( const char* addr_text, const char* len_text )
     if ( parse_uint32( len_text, &len ) == 0 || len == 0u || len > SFLASH_CONSOLE_READ_MAX )
     {
         printf( "[sflash] len must be 1..%lu\n", (unsigned long)SFLASH_CONSOLE_READ_MAX );
+        return;
+    }
+    if ( rewair_sflash_bounds_ok( addr, len ) == 0 )
+    {
+        printf( "[sflash] addr 0x%lx len %lu beyond device (2 MiB)\n",
+                (unsigned long)addr, (unsigned long)len );
         return;
     }
     if ( rewair_sflash_read_bytes( addr, buf, len ) != 0 )
@@ -3221,6 +3283,12 @@ void application_start( void )
     if ( wiced_rtos_init_mutex( &dct_wifi_mutex ) != WICED_SUCCESS )
     {
         printf( "dct wifi mutex init failed\n" );
+        return;
+    }
+
+    if ( wiced_rtos_init_mutex( &sflash_mutex ) != WICED_SUCCESS )
+    {
+        printf( "sflash mutex init failed\n" );
         return;
     }
 

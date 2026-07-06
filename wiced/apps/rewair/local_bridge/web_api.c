@@ -845,6 +845,11 @@ static int32_t api_debug_sflash_handler( const char* url, wiced_http_response_st
         api_send_error( stream, HTTP_HEADER_400, "len required, 1..256" );
         return 0;
     }
+    if ( rewair_sflash_bounds_ok( addr, len ) == 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "beyond device" );
+        return 0;
+    }
 
     if ( rewair_sflash_read_id( id ) != 0 )
     {

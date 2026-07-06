@@ -33,6 +33,10 @@ void           sensor_apply_manual_time( uint32_t epoch );
 void sensor_set_tz_rule( const rewair_tz_rule_t* rule );
 void send_time_context( uint32_t utc_seconds );
 
-/* External SPI flash bring-up (Phase 2 Task 1). Both return 0 on success. */
+/* External SPI flash bring-up (Phase 2 Task 1). Both return 0 on success.
+ * rewair_sflash_bounds_ok MUST be checked (addr, len) before read_bytes --
+ * the driver's 24-bit address silently wraps past the 2 MiB device instead
+ * of erroring. */
 int rewair_sflash_read_id( uint8_t out_id[3] );
 int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size );
+int rewair_sflash_bounds_ok( uint32_t addr, uint32_t len );
