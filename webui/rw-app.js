@@ -3,11 +3,18 @@
    polling fallback inside the adapter), theme, layout, modal routing.
    Exposes window.RewairUI for the dev tweaks harness.
    ============================================================ */
+import { h, render } from 'preact';
+import { useState, useEffect, useRef } from 'preact/hooks';
+import htm from 'htm';
+import { RW } from './rw-lib.js';
+import RewairAPI from './rw-api.js';
+import './rw-widgets.js';
+import './rw-network.js';
+import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
+
 (function (RW) {
   'use strict';
-  const { h, render } = preact;
   const html = htm.bind(h);
-  const { useState, useEffect, useRef } = preactHooks;
 
   RW.HISTORY_MAX = 48;
 
@@ -78,10 +85,10 @@
       setStatus(st);
     };
     /* one-shot refresh, used by modals after mutations (join/forget/settings/etc.) */
-    const poll = () => window.RewairAPI.status().then(onStatus);
+    const poll = () => RewairAPI.status().then(onStatus);
     pollExternal = poll;
     useEffect(() => {
-      const unsubscribe = window.RewairAPI.subscribe(onStatus);
+      const unsubscribe = RewairAPI.subscribe(onStatus);
       const sec = setInterval(() => setTick((n) => n + 1), 1000);     // live clock
       const cyc = setInterval(() => setCycle((c) => c + 1), 2000);  // matrix sensor cycle
       return () => { unsubscribe(); clearInterval(sec); clearInterval(cyc); };
@@ -91,9 +98,9 @@
 
     if (!status) return null;
 
-    const patch = (p) => window.RewairAPI.setSettings(p).then(poll);
-    const setDisp = (m) => window.RewairAPI.setDisp(m).then(poll);
-    const setTime = (e) => window.RewairAPI.setTime(e).then(poll);
+    const patch = (p) => RewairAPI.setSettings(p).then(poll);
+    const setDisp = (m) => RewairAPI.setDisp(m).then(poll);
+    const setTime = (e) => RewairAPI.setTime(e).then(poll);
 
     return html`<div id="rw-root">
       <div class="wrap">
@@ -114,4 +121,4 @@
   }
 
   render(html`<${App} />`, document.getElementById('app'));
-})(window.RW);
+})(RW);

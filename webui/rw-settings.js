@@ -14,11 +14,15 @@
 
    Sub line is for status/explanation ONLY — never the value.
    ============================================================ */
+import { h } from 'preact';
+import { useState, useRef, useEffect } from 'preact/hooks';
+import htm from 'htm';
+import { RW } from './rw-lib.js';
+import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
+
 (function (RW) {
   'use strict';
-  const { h } = preact;
   const html = htm.bind(h);
-  const { useState, useRef, useEffect } = preactHooks;
 
   function Seg({ value, options, onChange }) {
     return html`<span class="seg" onClick=${(e) => e.stopPropagation()}>
@@ -231,4 +235,4 @@
       ${fwOpen && html`<${RW.FirmwareModal} status=${status} refresh=${refresh} onClose=${() => setFwOpen(false)} />`}
       ${resetOpen && html`<${RW.ResetModal} refresh=${refresh} onClose=${() => setResetOpen(false)} />`}`;
   };
-})(window.RW);
+})(RW);

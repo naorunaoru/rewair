@@ -1,9 +1,12 @@
 /* ============================================================
    rw-widgets.js — ScoreHero, Sensors, DisplaySelector
    ============================================================ */
+import { h } from 'preact';
+import htm from 'htm';
+import { RW } from './rw-lib.js';
+
 (function (RW) {
   'use strict';
-  const { h } = preact;
   const html = htm.bind(h);
 
   const SENSORS = [
@@ -116,4 +119,4 @@
         </div>
       </section>`;
   };
-})(window.RW);
+})(RW);

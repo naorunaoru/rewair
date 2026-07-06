@@ -1,11 +1,15 @@
 /* ============================================================
    rw-network.js — NetworkSection, Manager, Details + Connect modals
    ============================================================ */
+import { h } from 'preact';
+import { useState, useEffect, useRef } from 'preact/hooks';
+import htm from 'htm';
+import { RW } from './rw-lib.js';
+import RewairAPI from './rw-api.js';
+
 (function (RW) {
   'use strict';
-  const { h } = preact;
   const html = htm.bind(h);
-  const { useState, useEffect, useRef } = preactHooks;
 
   /* ---- compact Network section (uses shared NetworkRow) ---- */
   RW.NetworkSection = function ({ status, onManage, onDetails }) {
@@ -80,12 +84,12 @@
     const netsRef = useRef([]);
     netsRef.current = nets;
 
-    const load = () => window.RewairAPI.networks().then(setNets);
+    const load = () => RewairAPI.networks().then(setNets);
     useEffect(() => { if (!dragSsid) load(); }, [bump]);
 
     const multi = nets.length > 1;
     const act = (fn) => { setMenu(null); fn().then(() => { load(); refresh(); }); };
-    const persistOrder = (order) => window.RewairAPI.priority(order).then(() => { load(); refresh(); });
+    const persistOrder = (order) => RewairAPI.priority(order).then(() => { load(); refresh(); });
 
     /* pointer-based drag: live reorder of the in-memory list as you move */
     const startDrag = (e, ssid) => {
@@ -129,9 +133,9 @@
     const kebab = (net, isPriority) => html`
       <button class="kebab" aria-label="Actions" onClick=${(e) => { e.stopPropagation(); setMenu(menu === net.ssid ? null : net.ssid); }}>⋯</button>
       ${menu === net.ssid && html`<${RowMenu} net=${net} isPriority=${isPriority}
-          onConnect=${() => net.connected ? (setMenu(null), onDetails()) : act(() => window.RewairAPI.join(net.ssid, ''))}
+          onConnect=${() => net.connected ? (setMenu(null), onDetails()) : act(() => RewairAPI.join(net.ssid, ''))}
           onPriority=${() => act(() => persistOrder([net.ssid].concat(netsRef.current.filter((n) => n.ssid !== net.ssid).map((n) => n.ssid))))}
-          onForget=${() => act(() => window.RewairAPI.forget(net.ssid))} />`}`;
+          onForget=${() => act(() => RewairAPI.forget(net.ssid))} />`}`;
 
     const badges = (n, i) => html`
       ${n.connected && html`<span class="badge on">on</span>`}
@@ -175,14 +179,14 @@
 
     const scan = () => {
       setPhase('scanning');
-      window.RewairAPI.scan().then((list) => { setNets(list); setPhase('list'); });
+      RewairAPI.scan().then((list) => { setNets(list); setPhase('list'); });
     };
     useEffect(() => { scan(); }, []);
 
     const pick = (n) => { setPicked(n); setErr(null); setPhase('join'); };
     const join = () => {
       setPhase('joining');
-      window.RewairAPI.join(picked.ssid, picked.sec === 'open' ? '' : (passRef.current ? passRef.current.value : '')).then(
+      RewairAPI.join(picked.ssid, picked.sec === 'open' ? '' : (passRef.current ? passRef.current.value : '')).then(
         () => { setPhase('done'); setTimeout(() => { onClose(); refresh(); }, 1500); },
         (e) => { setErr(e.message); setPhase('join'); }
       );
@@ -222,4 +226,4 @@
         </div>
       </div>`;
   };
-})(window.RW);
+})(RW);

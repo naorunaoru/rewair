@@ -1,13 +1,16 @@
 /* ============================================================
-   rw-lib.js — Rewair Preact app: shared helpers + primitives
-   Loaded first; seeds window.RW namespace.
+   rw-lib.js — Rewair Preact app: shared helpers + primitives.
+   Imported first by the other rw-*.js modules; exports the RW
+   namespace object (helpers + Signal/NetworkRow/Matrix primitives).
    ============================================================ */
-window.RW = window.RW || {};
+import { h } from 'preact';
+import { useEffect, useRef } from 'preact/hooks';
+import htm from 'htm';
+
+export const RW = {};
 (function (RW) {
   'use strict';
-  const { h } = preact;
   const html = htm.bind(h);
-  const { useEffect, useRef } = preactHooks;
 
   /* ---- formatting ---- */
   const p2 = (n) => (n < 10 ? '0' : '') + n;
@@ -153,4 +156,6 @@ window.RW = window.RW || {};
     useEffect(() => { drawMatrix(ref.current, text); }, [text]);
     return html`<canvas ref=${ref}></canvas>`;
   };
-})(window.RW);
+})(RW);
+
+export default RW;

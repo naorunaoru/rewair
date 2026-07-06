@@ -1,154 +1,159 @@
-/* Rewair production API adapter: window.RewairAPI over fetch/EventSource.
- * Replaces the dev mock-driver.js. Same surface + subscribe().
- * Point at a remote device with ?device=192.168.x.x (dev), else same-origin. */
-(function () {
-  'use strict';
+/* Rewair production API adapter: RewairAPI over fetch/EventSource.
+ * Point at a remote device with ?device=192.168.x.x (dev), else same-origin.
+ * Exported as an ES module AND still assigned to window.RewairAPI (kept for
+ * the dev console / parity with the pre-Vite build). Module scope means the
+ * top-level consts/functions below no longer leak to globals on their own. */
+const qs = new URLSearchParams(location.search);
+const BASE = qs.get('device') ? `http://${qs.get('device')}` : '';
 
-  const qs = new URLSearchParams(location.search);
-  const BASE = qs.get('device') ? `http://${qs.get('device')}` : '';
-
-  async function req(path, opts) {
-    const r = await fetch(BASE + path, opts);
-    if (!r.ok) {
-      let msg = `HTTP ${r.status}`;
-      try { msg = (await r.json()).error || msg; } catch (e) { /* keep default */ }
-      const err = new Error(msg);
-      err.status = r.status;
-      throw err;
-    }
-    const ct = r.headers.get('content-type') || '';
-    return ct.includes('json') ? r.json() : null;
+async function req(path, opts) {
+  const r = await fetch(BASE + path, opts);
+  if (!r.ok) {
+    let msg = `HTTP ${r.status}`;
+    try { msg = (await r.json()).error || msg; } catch (e) { /* keep default */ }
+    const err = new Error(msg);
+    err.status = r.status;
+    throw err;
   }
+  const ct = r.headers.get('content-type') || '';
+  return ct.includes('json') ? r.json() : null;
+}
 
-  /* POST JSON as text/plain: keeps the request CORS-"simple" (the device
-   * cannot answer OPTIONS preflights). */
-  function post(path, obj) {
-    return req(path, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
-                       body: JSON.stringify(obj || {}) });
-  }
+/* POST JSON as text/plain: keeps the request CORS-"simple" (the device
+ * cannot answer OPTIONS preflights). */
+function post(path, obj) {
+  return req(path, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+                     body: JSON.stringify(obj || {}) });
+}
 
-  /* Derive the browser zone's POSIX TZ string empirically (no tz table).
-   * Samples UTC offsets through the year; if two offsets exist, binary-search
-   * both transitions and express them as Mm.w.d/time rules. */
-  function derivePosixTZ() {
-    const year = new Date().getFullYear();
-    const offAt = (t) => -new Date(t).getTimezoneOffset(); // minutes east
-    const jan = offAt(new Date(year, 0, 15).getTime());
-    const jul = offAt(new Date(year, 6, 15).getTime());
-    const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
+/* Derive the browser zone's POSIX TZ string empirically (no tz table).
+ * Samples UTC offsets through the year; if two offsets exist, binary-search
+ * both transitions and express them as Mm.w.d/time rules. */
+function derivePosixTZ() {
+  const year = new Date().getFullYear();
+  const offAt = (t) => -new Date(t).getTimezoneOffset(); // minutes east
+  const jan = offAt(new Date(year, 0, 15).getTime());
+  const jul = offAt(new Date(year, 6, 15).getTime());
+  const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
 
-    const fmtOff = (min) => {
-      // POSIX sign is inverted: minutes east -> hours west
-      const west = -min;
-      const sign = west < 0 ? '-' : '';
-      const a = Math.abs(west);
-      const h = Math.floor(a / 60), m = a % 60;
-      return sign + h + (m ? ':' + String(m).padStart(2, '0') : '');
-    };
-    const abbr = (dst) => {
-      // POSIX needs a name; browsers don't expose one portably. Angle-bracket
-      // numeric names are valid POSIX: <+01>, <-0430>, and parse fine device-side.
-      const min = dst ? Math.max(jan, jul) : Math.min(jan, jul);
-      const sign = min < 0 ? '-' : '+';
-      const a = Math.abs(min);
-      return `<${sign}${String(Math.floor(a / 60)).padStart(2, '0')}${a % 60 ? String(a % 60).padStart(2, '0') : ''}>`;
-    };
-
-    if (jan === jul) {
-      return { tz_zone: zone, tz_posix: `${abbr(false)}${fmtOff(jan)}` };
-    }
-
-    const std = Math.min(jan, jul), dst = Math.max(jan, jul);
-    // find the two instants where the offset changes, searching day pairs
-    const findTransition = (fromMs, toMs) => {
-      let lo = fromMs, hi = toMs;
-      while (hi - lo > 60000) {
-        const mid = lo + Math.floor((hi - lo) / 2);
-        (offAt(mid) === offAt(fromMs)) ? (lo = mid) : (hi = mid);
-      }
-      return new Date(hi);
-    };
-    const y0 = new Date(year, 0, 1).getTime(), y1 = new Date(year + 1, 0, 1).getTime();
-    const mid = new Date(year, 6, 1).getTime();
-    const t1 = findTransition(y0, mid);   // offset(jan) -> offset(jul)
-    const t2 = findTransition(mid, y1);   // offset(jul) -> offset(jan)
-    const toDST = offAt(t1.getTime()) === dst ? t1 : t2;   // northern vs southern
-    const toSTD = toDST === t1 ? t2 : t1;
-
-    const mrule = (d, activeOffsetMin) => {
-      // express the local wall-time instant as Mm.w.d/h[:mm]
-      const local = new Date(d.getTime() + activeOffsetMin * 60000);
-      const m = local.getUTCMonth() + 1, dom = local.getUTCDate(), dow = local.getUTCDay();
-      const week = Math.floor((dom - 1) / 7) + 1;
-      const lastWeek = dom + 7 > new Date(Date.UTC(local.getUTCFullYear(), m, 0)).getUTCDate();
-      const w = lastWeek && week >= 4 ? 5 : week;
-      const h = local.getUTCHours(), mm = local.getUTCMinutes();
-      return `M${m}.${w}.${dow}` + (h === 2 && mm === 0 ? '' : `/${h}${mm ? ':' + String(mm).padStart(2, '0') : ''}`);
-    };
-
-    return {
-      tz_zone: zone,
-      tz_posix: `${abbr(false)}${fmtOff(std)}${abbr(true)}${fmtOff(dst)},` +
-                `${mrule(toDST, std)},${mrule(toSTD, dst)}`
-    };
-  }
-
-  let es = null;
-  let pollTimer = null;
-  let esFailures = 0;
-
-  window.RewairAPI = {
-    status: () => req('/api/status'),
-    scan: () => req('/api/scan'),
-    networks: () => req('/api/networks'),
-    join: (ssid, pass) => post('/api/join', { ssid, pass }),
-    forget: (ssid) => post('/api/forget', { ssid }),
-    priority: (order) => post('/api/priority', { order }),
-    setSettings: (patch) => {
-      const p = Object.assign({}, patch);
-      /* rw-settings.js signals "auto-detect timezone" by sending a truthy
-       * tz_zone (the browser's IANA zone name, e.g. "America/New_York")
-       * alongside tz_offset/tz_dst — there is no tz_mode/tz_auto flag.
-       * Fixed-offset picks send tz_zone: null. When auto, enrich the patch
-       * with the empirically-derived POSIX TZ (tz_zone + tz_posix) so the
-       * device can track DST transitions itself; tz_offset/tz_dst are kept
-       * (they are accurate now, and the UI reads them back from status). */
-      if (p.tz_zone) {
-        Object.assign(p, derivePosixTZ());
-      }
-      return post('/api/settings', p);
-    },
-    setDisp: (mode) => post('/api/disp', { mode }),
-    setTime: (epoch) => post('/api/time', { epoch }),
-    update: (_file, _onProgress) =>
-      Promise.reject(new Error('Firmware update not supported by this device')),
-    reset: () => post('/api/reset', {}),
-
-    /* Live updates: SSE with transparent polling fallback. */
-    subscribe(onStatus) {
-      const startPolling = () => {
-        if (pollTimer) return;
-        pollTimer = setInterval(() => this.status().then(onStatus).catch(() => {}), 2500);
-      };
-      const stopPolling = () => { clearInterval(pollTimer); pollTimer = null; };
-
-      /* Defensive: a second subscribe() call would otherwise overwrite `es`
-       * and leak the prior EventSource (it keeps its connection open and
-       * retrying forever). Auto-unsubscribe any live session first. */
-      if (es) { es.close(); es = null; stopPolling(); }
-
-      es = new EventSource(BASE + '/api/events');
-      es.onmessage = (ev) => {
-        esFailures = 0;
-        stopPolling();
-        try { onStatus(JSON.parse(ev.data)); } catch (e) { /* skip bad frame */ }
-      };
-      es.onerror = () => {
-        esFailures += 1;
-        if (esFailures >= 3) startPolling();   /* EventSource keeps retrying too */
-      };
-      this.status().then(onStatus).catch(() => {});
-      return () => { if (es) es.close(); es = null; stopPolling(); };
-    },
+  const fmtOff = (min) => {
+    // POSIX sign is inverted: minutes east -> hours west
+    const west = -min;
+    const sign = west < 0 ? '-' : '';
+    const a = Math.abs(west);
+    const h = Math.floor(a / 60), m = a % 60;
+    return sign + h + (m ? ':' + String(m).padStart(2, '0') : '');
   };
-})();
+  const abbr = (dst) => {
+    // POSIX needs a name; browsers don't expose one portably. Angle-bracket
+    // numeric names are valid POSIX: <+01>, <-0430>, and parse fine device-side.
+    const min = dst ? Math.max(jan, jul) : Math.min(jan, jul);
+    const sign = min < 0 ? '-' : '+';
+    const a = Math.abs(min);
+    return `<${sign}${String(Math.floor(a / 60)).padStart(2, '0')}${a % 60 ? String(a % 60).padStart(2, '0') : ''}>`;
+  };
+
+  if (jan === jul) {
+    return { tz_zone: zone, tz_posix: `${abbr(false)}${fmtOff(jan)}` };
+  }
+
+  const std = Math.min(jan, jul), dst = Math.max(jan, jul);
+  // find the two instants where the offset changes, searching day pairs
+  const findTransition = (fromMs, toMs) => {
+    let lo = fromMs, hi = toMs;
+    while (hi - lo > 60000) {
+      const mid = lo + Math.floor((hi - lo) / 2);
+      (offAt(mid) === offAt(fromMs)) ? (lo = mid) : (hi = mid);
+    }
+    return new Date(hi);
+  };
+  const y0 = new Date(year, 0, 1).getTime(), y1 = new Date(year + 1, 0, 1).getTime();
+  const mid = new Date(year, 6, 1).getTime();
+  const t1 = findTransition(y0, mid);   // offset(jan) -> offset(jul)
+  const t2 = findTransition(mid, y1);   // offset(jul) -> offset(jan)
+  const toDST = offAt(t1.getTime()) === dst ? t1 : t2;   // northern vs southern
+  const toSTD = toDST === t1 ? t2 : t1;
+
+  const mrule = (d, activeOffsetMin) => {
+    // express the local wall-time instant as Mm.w.d/h[:mm]
+    const local = new Date(d.getTime() + activeOffsetMin * 60000);
+    const m = local.getUTCMonth() + 1, dom = local.getUTCDate(), dow = local.getUTCDay();
+    const week = Math.floor((dom - 1) / 7) + 1;
+    const lastWeek = dom + 7 > new Date(Date.UTC(local.getUTCFullYear(), m, 0)).getUTCDate();
+    const w = lastWeek && week >= 4 ? 5 : week;
+    const h = local.getUTCHours(), mm = local.getUTCMinutes();
+    return `M${m}.${w}.${dow}` + (h === 2 && mm === 0 ? '' : `/${h}${mm ? ':' + String(mm).padStart(2, '0') : ''}`);
+  };
+
+  return {
+    tz_zone: zone,
+    tz_posix: `${abbr(false)}${fmtOff(std)}${abbr(true)}${fmtOff(dst)},` +
+              `${mrule(toDST, std)},${mrule(toSTD, dst)}`
+  };
+}
+
+let es = null;
+let pollTimer = null;
+let esFailures = 0;
+
+const RewairAPI = {
+  status: () => req('/api/status'),
+  scan: () => req('/api/scan'),
+  networks: () => req('/api/networks'),
+  join: (ssid, pass) => post('/api/join', { ssid, pass }),
+  forget: (ssid) => post('/api/forget', { ssid }),
+  priority: (order) => post('/api/priority', { order }),
+  setSettings: (patch) => {
+    const p = Object.assign({}, patch);
+    /* rw-settings.js signals "auto-detect timezone" by sending a truthy
+     * tz_zone (the browser's IANA zone name, e.g. "America/New_York")
+     * alongside tz_offset/tz_dst — there is no tz_mode/tz_auto flag.
+     * Fixed-offset picks send tz_zone: null. When auto, enrich the patch
+     * with the empirically-derived POSIX TZ (tz_zone + tz_posix) so the
+     * device can track DST transitions itself; tz_offset/tz_dst are kept
+     * (they are accurate now, and the UI reads them back from status). */
+    if (p.tz_zone) {
+      Object.assign(p, derivePosixTZ());
+    }
+    return post('/api/settings', p);
+  },
+  setDisp: (mode) => post('/api/disp', { mode }),
+  setTime: (epoch) => post('/api/time', { epoch }),
+  update: (_file, _onProgress) =>
+    Promise.reject(new Error('Firmware update not supported by this device')),
+  reset: () => post('/api/reset', {}),
+
+  /* Live updates: SSE with transparent polling fallback. */
+  subscribe(onStatus) {
+    const startPolling = () => {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => this.status().then(onStatus).catch(() => {}), 2500);
+    };
+    const stopPolling = () => { clearInterval(pollTimer); pollTimer = null; };
+
+    /* Defensive: a second subscribe() call would otherwise overwrite `es`
+     * and leak the prior EventSource (it keeps its connection open and
+     * retrying forever). Auto-unsubscribe any live session first. */
+    if (es) { es.close(); es = null; stopPolling(); }
+
+    es = new EventSource(BASE + '/api/events');
+    es.onmessage = (ev) => {
+      esFailures = 0;
+      stopPolling();
+      try { onStatus(JSON.parse(ev.data)); } catch (e) { /* skip bad frame */ }
+    };
+    es.onerror = () => {
+      esFailures += 1;
+      if (esFailures >= 3) startPolling();   /* EventSource keeps retrying too */
+    };
+    this.status().then(onStatus).catch(() => {});
+    return () => { if (es) es.close(); es = null; stopPolling(); };
+  },
+};
+
+/* Kept as a global too: preserves the dev-console affordance (`RewairAPI.status()`
+ * from devtools) that existed pre-Vite. */
+window.RewairAPI = RewairAPI;
+
+export { RewairAPI };
+export default RewairAPI;

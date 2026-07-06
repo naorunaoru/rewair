@@ -25,3 +25,8 @@ artifacts/
 # External SDKs should stay outside this repo.
 third_party/
 .superpowers/
+
+# Web UI (Vite build)
+webui/node_modules/
+webui/dist/
+webui/*.rwfs

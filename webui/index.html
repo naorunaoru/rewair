@@ -45,21 +45,10 @@
 
 <div id="app"></div>
 
-<!-- API provider: production fetch/EventSource adapter exposing window.RewairAPI -->
-<script src="rw-api.js"></script>
-
-<!-- Preact runtime (vendored into flash for production) -->
-<script src="vendor/preact.umd.js"></script>
-<script src="vendor/preact-hooks.umd.js"></script>
-<script src="vendor/htm.umd.js"></script>
-
-<!-- app components (load order matters: lib seeds window.RW) -->
-<script src="rw-lib.js"></script>
-<script src="rw-widgets.js"></script>
-<script src="rw-network.js"></script>
-<script src="rw-system.js"></script>
-<script src="rw-settings.js"></script>
-<script src="rw-app.js"></script>
+<!-- ES module graph, bundled by Vite. rw-app.js imports rw-lib (shared RW
+     namespace + preact/htm from npm), rw-widgets/rw-network/rw-settings
+     (which pulls in rw-system), and rw-api (window.RewairAPI adapter). -->
+<script type="module" src="/rw-app.js"></script>
 
 </body>
 </html>

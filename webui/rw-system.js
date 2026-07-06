@@ -1,11 +1,15 @@
 /* ============================================================
    rw-system.js — Firmware update + Factory reset modals
    ============================================================ */
+import { h } from 'preact';
+import { useState, useRef } from 'preact/hooks';
+import htm from 'htm';
+import { RW } from './rw-lib.js';
+import RewairAPI from './rw-api.js';
+
 (function (RW) {
   'use strict';
-  const { h } = preact;
   const html = htm.bind(h);
-  const { useState, useRef } = preactHooks;
 
   RW.FirmwareModal = function ({ status, onClose, refresh }) {
     const [phase, setPhase] = useState('pick'); // pick | flashing | done
@@ -18,7 +22,7 @@
     const install = () => {
       setErr(null);
       setPhase('flashing'); setPct(0);
-      window.RewairAPI.update(file, setPct).then(() => {
+      RewairAPI.update(file, setPct).then(() => {
         setPhase('done');
         setTimeout(() => { onClose(); refresh(); }, 1800);
       }, (e) => {
@@ -67,7 +71,7 @@
     const [phase, setPhase] = useState('confirm'); // confirm | resetting
     const doReset = () => {
       setPhase('resetting');
-      window.RewairAPI.reset().then(() => { setTimeout(() => { onClose(); refresh(); }, 400); });
+      RewairAPI.reset().then(() => { setTimeout(() => { onClose(); refresh(); }, 400); });
     };
     return html`
       <div class="overlay" onClick=${(e) => phase === 'confirm' && e.target.classList.contains('overlay') && onClose()}>
@@ -89,4 +93,4 @@
         </div>
       </div>`;
   };
-})(window.RW);
+})(RW);
