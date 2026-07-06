@@ -241,6 +241,16 @@ static void emit_int( emit_t* e, const char* key, int32_t value )
     emit_raw( e, num );
 }
 
+static void emit_u32( emit_t* e, const char* key, uint32_t value )
+{
+    char num[16];
+
+    emit_raw( e, "\"" );
+    emit_raw( e, key );
+    snprintf( num, sizeof( num ), "\":%lu", (unsigned long)value );
+    emit_raw( e, num );
+}
+
 static void emit_centi( emit_t* e, const char* key, int32_t centi )
 {
     char num[24];
@@ -325,7 +335,7 @@ int rewair_json_status( const struct rewair_status* st, char* buf, uint32_t buf_
 
     emit_raw( &e, ",\"time\":{" );
     emit_bool( &e, "valid", st->time_valid );  emit_raw( &e, "," );
-    emit_int( &e, "epoch", (int32_t)st->epoch ); emit_raw( &e, "," );
+    emit_u32( &e, "epoch", st->epoch );        emit_raw( &e, "," );
     emit_bool( &e, "synced", st->time_synced );
     emit_raw( &e, "}" );
 

@@ -73,6 +73,12 @@ int main( void )
         assert( strcmp( esc, "a\\\"b\\\\" ) == 0 );
     }
 
+    /* epoch must serialize unsigned: a post-2038 value must not wrap negative */
+    st.epoch = 2400000000u; /* year 2046 */
+    len = rewair_json_status( &st, buf, sizeof( buf ) );
+    assert( len > 0 );
+    assert( strstr( buf, "\"epoch\":2400000000" ) != NULL );
+
     printf( "test_status OK\n" );
     return 0;
 }

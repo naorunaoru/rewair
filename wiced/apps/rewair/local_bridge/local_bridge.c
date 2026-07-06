@@ -74,6 +74,9 @@ static wiced_thread_t sensor_thread;
 static wiced_thread_t console_thread;
 static wiced_thread_t network_thread;
 static wiced_mutex_t sensor_uart_tx_mutex;
+/* Guards DCT wifi-section read/write critical sections only; never held
+ * across joins, frame sends, or state-cache calls. */
+static wiced_mutex_t dct_wifi_mutex;
 static wiced_ring_buffer_t sensor_uart_rx_buffer;
 static uint8_t sensor_uart_rx_data[SENSOR_RX_BUFFER_SIZE];
 
@@ -653,15 +656,19 @@ static int wifi_dct_has_stored_ap( void )
     wiced_config_ap_entry_t* ap = NULL;
     int present = 0;
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     if ( wiced_dct_read_lock( (void**)&ap, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
                               OFFSETOF( platform_dct_wifi_config_t, stored_ap_list ),
                               sizeof( *ap ) ) != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         return 0;
     }
 
     present = ap->details.SSID.length != 0u && ap->details.SSID.length <= SSID_NAME_SIZE;
     wiced_dct_read_unlock( ap, WICED_FALSE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
     return present;
 }
 
@@ -671,9 +678,12 @@ uint32_t wifi_dct_saved_count( void )
     uint32_t count = 0u;
     uint32_t i;
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     if ( wiced_dct_read_lock( (void**)&wifi_config, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
                               0, sizeof( *wifi_config ) ) != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         return 0u;
     }
     for ( i = 0u; i < CONFIG_AP_LIST_SIZE; i++ )
@@ -685,6 +695,7 @@ uint32_t wifi_dct_saved_count( void )
         }
     }
     wiced_dct_read_unlock( wifi_config, WICED_FALSE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
     return count;
 }
 
@@ -693,9 +704,12 @@ static void wifi_print_saved_credentials( void )
     platform_dct_wifi_config_t* wifi_config = NULL;
     uint32_t i;
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     if ( wiced_dct_read_lock( (void**)&wifi_config, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
                               0, sizeof( *wifi_config ) ) != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] saved: DCT read failed\n" );
         return;
     }
@@ -717,6 +731,7 @@ static void wifi_print_saved_credentials( void )
     }
 
     wiced_dct_read_unlock( wifi_config, WICED_FALSE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 }
 
 wiced_result_t wifi_clear_stored_credentials( void )
@@ -724,10 +739,13 @@ wiced_result_t wifi_clear_stored_credentials( void )
     platform_dct_wifi_config_t* wifi_config = NULL;
     wiced_result_t result;
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
                                   0, sizeof( *wifi_config ) );
     if ( result != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
         return result;
     }
@@ -736,6 +754,7 @@ wiced_result_t wifi_clear_stored_credentials( void )
     wifi_config->device_configured = WICED_FALSE;
     result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
     wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 
     printf( "[wifi] stored credentials %s\n", result == WICED_SUCCESS ? "cleared" : "clear failed" );
     return result;
@@ -754,10 +773,13 @@ static wiced_result_t wifi_store_ap_credentials( const wiced_ap_info_t* ap,
         return WICED_BADARG;
     }
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
                                   0, sizeof( *wifi_config ) );
     if ( result != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
         return result;
     }
@@ -775,6 +797,7 @@ static wiced_result_t wifi_store_ap_credentials( const wiced_ap_info_t* ap,
 
     result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
     wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 
     if ( result == WICED_SUCCESS )
     {
@@ -969,10 +992,13 @@ wiced_result_t wifi_list_add( const char* ssid, const char* pass )
         return WICED_BADARG;
     }
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
                                   0, sizeof( *wifi_config ) );
     if ( result != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
         return result;
     }
@@ -999,6 +1025,7 @@ wiced_result_t wifi_list_add( const char* ssid, const char* pass )
     if ( match_slot < 0 && free_slot < 0 )
     {
         wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] stored_ap_list full; cannot add \"%s\"\n", ssid );
         return WICED_ERROR;
     }
@@ -1018,6 +1045,7 @@ wiced_result_t wifi_list_add( const char* ssid, const char* pass )
 
         result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
         wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 
         if ( result == WICED_SUCCESS )
         {
@@ -1047,10 +1075,13 @@ wiced_result_t wifi_list_remove( const char* ssid )
         return WICED_BADARG;
     }
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
                                   0, sizeof( *wifi_config ) );
     if ( result != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
         return result;
     }
@@ -1069,6 +1100,7 @@ wiced_result_t wifi_list_remove( const char* ssid )
     if ( slot < 0 )
     {
         wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         return WICED_NOT_FOUND;
     }
 
@@ -1097,6 +1129,7 @@ wiced_result_t wifi_list_remove( const char* ssid )
 
     result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
     wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 
     if ( result != WICED_SUCCESS )
     {
@@ -1130,10 +1163,13 @@ wiced_result_t wifi_list_reorder( char order[][33], uint32_t count )
         return WICED_BADARG;
     }
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     result = wiced_dct_read_lock( (void**)&wifi_config, WICED_TRUE, DCT_WIFI_CONFIG_SECTION,
                                   0, sizeof( *wifi_config ) );
     if ( result != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         printf( "[wifi] DCT read failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
         return result;
     }
@@ -1151,6 +1187,7 @@ wiced_result_t wifi_list_reorder( char order[][33], uint32_t count )
     if ( count != saved_count )
     {
         wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         return WICED_BADARG;
     }
 
@@ -1179,6 +1216,7 @@ wiced_result_t wifi_list_reorder( char order[][33], uint32_t count )
             if ( found == 0 )
             {
                 wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+                wiced_rtos_unlock_mutex( &dct_wifi_mutex );
                 return WICED_BADARG;
             }
         }
@@ -1200,6 +1238,7 @@ wiced_result_t wifi_list_reorder( char order[][33], uint32_t count )
 
     result = wiced_dct_write( wifi_config, DCT_WIFI_CONFIG_SECTION, 0, sizeof( *wifi_config ) );
     wiced_dct_read_unlock( wifi_config, WICED_TRUE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 
     if ( result != WICED_SUCCESS )
     {
@@ -1221,9 +1260,12 @@ int wifi_list_get( uint32_t index, char ssid_out[33], wiced_security_t* sec_out,
         return 0;
     }
 
+    wiced_rtos_lock_mutex( &dct_wifi_mutex );
+
     if ( wiced_dct_read_lock( (void**)&wifi_config, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
                               0, sizeof( *wifi_config ) ) != WICED_SUCCESS )
     {
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         return 0;
     }
 
@@ -1254,6 +1296,7 @@ int wifi_list_get( uint32_t index, char ssid_out[33], wiced_security_t* sec_out,
     }
 
     wiced_dct_read_unlock( wifi_config, WICED_FALSE );
+    wiced_rtos_unlock_mutex( &dct_wifi_mutex );
 
     if ( found == 0 )
     {
@@ -2276,6 +2319,7 @@ static void network_after_ip_ready( void )
             mac_to_cstr( &mac, mac_buf );
         }
         wwd_wifi_get_rssi( &rssi );
+        wiced_rtos_lock_mutex( &dct_wifi_mutex );
         if ( wiced_dct_read_lock( (void**)&ap, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
                                   OFFSETOF( platform_dct_wifi_config_t, stored_ap_list ),
                                   sizeof( *ap ) ) == WICED_SUCCESS )
@@ -2285,6 +2329,7 @@ static void network_after_ip_ready( void )
             ssid_buf[n] = '\0';
             wiced_dct_read_unlock( ap, WICED_FALSE );
         }
+        wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         rewair_state_set_wifi_sta( ssid_buf, rssi, ip_buf, gw_buf, dns_buf, mac_buf,
                                    wifi_dct_saved_count( ) );
     }
@@ -3027,6 +3072,12 @@ void application_start( void )
     }
 
     rewair_state_init( );
+
+    if ( wiced_rtos_init_mutex( &dct_wifi_mutex ) != WICED_SUCCESS )
+    {
+        printf( "dct wifi mutex init failed\n" );
+        return;
+    }
 
     {
         rewair_tz_rule_t rule;

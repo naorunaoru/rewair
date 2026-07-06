@@ -82,11 +82,9 @@
     pollExternal = poll;
     useEffect(() => {
       const unsubscribe = window.RewairAPI.subscribe(onStatus);
-      const onChange = () => { poll(); setBump((b) => b + 1); };
-      window.addEventListener('rewair:mockchange', onChange);
       const sec = setInterval(() => setTick((n) => n + 1), 1000);     // live clock
       const cyc = setInterval(() => setCycle((c) => c + 1), 2000);  // matrix sensor cycle
-      return () => { unsubscribe(); clearInterval(sec); clearInterval(cyc); window.removeEventListener('rewair:mockchange', onChange); };
+      return () => { unsubscribe(); clearInterval(sec); clearInterval(cyc); };
     }, []);
 
     /* auto timezone is set explicitly by the user (Settings → Time zone) */
