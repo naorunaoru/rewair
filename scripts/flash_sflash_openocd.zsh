@@ -85,6 +85,12 @@ fi
 
 print -r -- "Writing $image ($image_size bytes) to 0x$(printf %x $addr) via OpenOCD..."
 
+if pgrep -f "probe-rs" > /dev/null 2>&1; then
+    print -u2 -r -- "error: a probe-rs process is running and likely holds the debug probe."
+    print -u2 -r -- "       Stop it first (e.g. 'pkill -f probe-rs'), then re-run."
+    exit 1
+fi
+
 openocd \
     -f interface/cmsis-dap.cfg \
     -c "transport select swd" \
