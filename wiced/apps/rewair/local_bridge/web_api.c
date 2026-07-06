@@ -14,6 +14,10 @@
 #define API_WORKER_STACK  6000u
 #define API_MAX_SAVED_NETWORKS CONFIG_AP_LIST_SIZE
 
+#define SSE_MAX_SUBS       2u
+#define SSE_HEARTBEAT_MS   15000u
+#define SSE_THREAD_STACK   4096u
+
 static wiced_http_server_t http_server;
 static uint32_t            server_started = 0u;
 
@@ -686,6 +690,196 @@ static int32_t api_reset_handler( const char* url, wiced_http_response_stream_t*
     return 0;
 }
 
+/* ---- GET /api/events (SSE) ----
+ *
+ * Concurrency model:
+ *  - sse_subs[] is a fixed-size table of live subscriber sockets, guarded by
+ *    sse_mutex. Both the broadcaster thread and api_events_handler (running on
+ *    an HTTP worker thread) touch it only while holding sse_mutex.
+ *  - The broadcaster NEVER holds the state mutex (rewair_state.c's internal
+ *    mutex) while writing to a socket: rewair_state_snapshot() copies the
+ *    struct out under that mutex and releases it before rewair_json_status()
+ *    or sse_broadcast() ever run. So a slow/dead SSE peer can never block a
+ *    caller of rewair_state_set_* (which only need the state mutex briefly).
+ *  - sse_write_to() uses wiced_tcp_stream_write()/_flush(), which bottom out
+ *    in network_tcp_send_packet() -> LwIP netconn_write(..., NETCONN_DONTBLOCK).
+ *    That means a write to a dead/unresponsive peer returns an error
+ *    immediately (does NOT block for minutes) -- so sse_mutex is never held
+ *    across a long stall. Confirmed by reading
+ *    WICED/network/LwIP/WICED/tcpip.c:network_tcp_send_packet().
+ *  - On a write failure, the broadcaster calls
+ *    wiced_http_server_queue_disconnect_request() (async: queues the
+ *    teardown to the HTTP daemon's own event thread) and clears the slot
+ *    immediately, all still under sse_mutex -- so a second broadcast in the
+ *    same pass, or a concurrent api_events_handler() eviction, never sees a
+ *    stale non-NULL slot pointing at a socket already headed for teardown.
+ *  - Eviction (sse_add_subscriber, when the table is full) also runs under
+ *    sse_mutex and uses the same queue_disconnect_request call the daemon
+ *    itself uses elsewhere in this file (api_scan_handler /
+ *    api_networks_handler) -- so it's consistent with how this codebase
+ *    always tears down raw-handler sockets: asynchronously, never a direct
+ *    close from this thread.
+ *  - Because disconnection is always requested via queue_disconnect_request
+ *    (never a direct wiced_tcp_* close from this file), there's no path
+ *    where this file's own code races the daemon's disconnect callback on
+ *    the *same* socket pointer: once a slot is cleared under sse_mutex, this
+ *    file will never write to that socket again, and the daemon owns the
+ *    rest of the actual teardown independently. The only residual risk is
+ *    the daemon reusing/freeing the wiced_tcp_socket_t memory for a new
+ *    accept() before our queued disconnect completes; WICED's HTTP server
+ *    processes disconnects on its own event thread serially with accepts,
+ *    so this matches the same lifetime assumption api_scan_handler already
+ *    relies on. */
+static wiced_tcp_socket_t* sse_subs[SSE_MAX_SUBS];
+static wiced_mutex_t       sse_mutex;
+static wiced_semaphore_t   sse_wake;
+static wiced_thread_t      sse_thread;
+
+static void sse_on_state_change( void )
+{
+    wiced_rtos_set_semaphore( &sse_wake );
+}
+
+static void sse_add_subscriber( wiced_tcp_socket_t* socket )
+{
+    uint32_t i;
+
+    wiced_rtos_lock_mutex( &sse_mutex );
+    for ( i = 0u; i < SSE_MAX_SUBS; i++ )
+    {
+        if ( sse_subs[i] == NULL )
+        {
+            sse_subs[i] = socket;
+            wiced_rtos_unlock_mutex( &sse_mutex );
+            return;
+        }
+    }
+    /* full: evict slot 0 (oldest), shift, append */
+    printf( "[web] sse table full, evicting oldest subscriber\n" );
+    wiced_http_server_queue_disconnect_request( &http_server, sse_subs[0] );
+    for ( i = 0u; i + 1u < SSE_MAX_SUBS; i++ )
+    {
+        sse_subs[i] = sse_subs[i + 1u];
+    }
+    sse_subs[SSE_MAX_SUBS - 1u] = socket;
+    wiced_rtos_unlock_mutex( &sse_mutex );
+}
+
+/* Own wiced_tcp_stream per write (init/write/flush/deinit) -- this stream is
+ * just a thin cursor over the socket's TX packet, so building a fresh one
+ * per broadcast keeps each subscriber's framing independent without needing
+ * to keep a long-lived stream object per subscriber alongside the socket
+ * pointer in sse_subs[]. */
+static int sse_write_to( wiced_tcp_socket_t* socket, const char* data, uint32_t len )
+{
+    wiced_tcp_stream_t s;
+    wiced_result_t result;
+
+    if ( wiced_tcp_stream_init( &s, socket ) != WICED_SUCCESS )
+    {
+        return -1;
+    }
+    result = wiced_tcp_stream_write( &s, data, len );
+    if ( result == WICED_SUCCESS )
+    {
+        result = wiced_tcp_stream_flush( &s );
+    }
+    wiced_tcp_stream_deinit( &s );
+    return result == WICED_SUCCESS ? 0 : -1;
+}
+
+static void sse_broadcast( const char* payload, uint32_t len )
+{
+    uint32_t i;
+
+    wiced_rtos_lock_mutex( &sse_mutex );
+    for ( i = 0u; i < SSE_MAX_SUBS; i++ )
+    {
+        if ( sse_subs[i] != NULL && sse_write_to( sse_subs[i], payload, len ) != 0 )
+        {
+            printf( "[web] sse client %lu gone\n", (unsigned long)i );
+            wiced_http_server_queue_disconnect_request( &http_server, sse_subs[i] );
+            sse_subs[i] = NULL;
+        }
+    }
+    wiced_rtos_unlock_mutex( &sse_mutex );
+}
+
+static void sse_thread_main( uint32_t arg )
+{
+    static char json[API_STATUS_BUF];
+    static char frame[API_STATUS_BUF + 16u];
+    rewair_status_t st;
+    wiced_result_t got;
+    int len;
+    int n;
+
+    (void)arg;
+    while ( 1 )
+    {
+        got = wiced_rtos_get_semaphore( &sse_wake, SSE_HEARTBEAT_MS );
+        if ( got != WICED_SUCCESS )
+        {
+            sse_broadcast( ": ka\n\n", 6u );
+            continue;
+        }
+        rewair_state_snapshot( &st );
+        {
+            wiced_time_t now_ms = 0;
+            wiced_time_get_time( &now_ms );
+            if ( st.wifi_mode == 0u && st.connected_s != 0u )
+            {
+                st.connected_s = (uint32_t)now_ms / 1000u - st.connected_s;
+            }
+        }
+        len = rewair_json_status( &st, json, sizeof( json ) );
+        if ( len < 0 )
+        {
+            continue;
+        }
+        n = snprintf( frame, sizeof( frame ), "data: %s\n\n", json );
+        if ( n > 0 )
+        {
+            sse_broadcast( frame, (uint32_t)n );
+        }
+    }
+}
+
+static int32_t api_events_handler( const char* url, wiced_http_response_stream_t* stream,
+                                   void* arg, wiced_http_message_body_t* http_data )
+{
+    static char json[API_STATUS_BUF];
+    rewair_status_t st;
+    int len;
+
+    (void)url; (void)arg;
+    if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
+    {
+        api_send_error( stream, HTTP_HEADER_405, "GET only" );
+        return 0;
+    }
+
+    {
+        const char* hdr = HTTP_HEADER_200 "\r\n"
+                          "Content-Type: text/event-stream\r\n"
+                          API_CORS_HEADER
+                          "Cache-Control: no-cache\r\n"
+                          "\r\n";
+        wiced_http_response_stream_write( stream, hdr, (uint32_t)strlen( hdr ) );
+    }
+    rewair_state_snapshot( &st );
+    len = rewair_json_status( &st, json, sizeof( json ) );
+    if ( len > 0 )
+    {
+        wiced_http_response_stream_write( stream, "data: ", 6u );
+        wiced_http_response_stream_write( stream, json, (uint32_t)len );
+        wiced_http_response_stream_write( stream, "\n\n", 2u );
+    }
+    wiced_http_response_stream_flush( stream );
+    sse_add_subscriber( stream->tcp_stream.socket );
+    return 0;
+}
+
 /* ---- page database + start ---- */
 static START_OF_HTTP_PAGE_DATABASE( api_pages )
     { "/api/status",    "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
@@ -694,6 +888,11 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_scan_handler, NULL } },
     { "/api/networks",  "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_networks_handler, NULL } },
+    /* GET-only route: single entry is enough since GET requests carry no
+     * Content-Type, so mime matching passes via MIME_TYPE_ALL regardless of
+     * this entry's declared "text/event-stream" mime. */
+    { "/api/events",    "text/event-stream", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_events_handler, NULL } },
     { "/api/join",      "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_join_handler, NULL } },
     { "/api/forget",    "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
@@ -741,6 +940,13 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
     {
         return WICED_SUCCESS;
     }
+
+    wiced_rtos_init_mutex( &sse_mutex );
+    wiced_rtos_init_semaphore( &sse_wake );
+    rewair_state_subscribe( sse_on_state_change );
+    wiced_rtos_create_thread( &sse_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "sse",
+                              sse_thread_main, SSE_THREAD_STACK, NULL );
+
     result = wiced_http_server_start( &http_server, 80u, 4u, api_pages, interface,
                                       API_WORKER_STACK );
     if ( result == WICED_SUCCESS )

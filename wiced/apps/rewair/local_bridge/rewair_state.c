@@ -93,7 +93,27 @@ void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
                                 const char* gw, const char* dns, const char* mac,
                                 uint32_t saved_count )
 {
+    int changed;
+
     wiced_rtos_lock_mutex( &state_mutex );
+    /* network_after_ip_ready calls this every network-loop iteration (~60s)
+     * even when nothing changed. Without this early-out, every call bumps
+     * seq + notifies, which would make the SSE broadcaster push identical
+     * frames pointlessly. Compare against current state under the mutex and
+     * skip the bump/notify entirely when nothing changed. */
+    changed = ( state.wifi_mode != 0u ) ||
+              ( strcmp( state.ssid, ssid != NULL ? ssid : "" ) != 0 ) ||
+              ( state.rssi != rssi ) ||
+              ( strcmp( state.ip, ip != NULL ? ip : "" ) != 0 ) ||
+              ( strcmp( state.gw, gw != NULL ? gw : "" ) != 0 ) ||
+              ( strcmp( state.dns, dns != NULL ? dns : "" ) != 0 ) ||
+              ( strcmp( state.mac, mac != NULL ? mac : "" ) != 0 ) ||
+              ( state.saved_count != saved_count );
+    if ( !changed )
+    {
+        wiced_rtos_unlock_mutex( &state_mutex );
+        return;
+    }
     state.wifi_mode = 0u;
     copy_str( state.ssid, sizeof( state.ssid ), ssid );
     state.rssi = rssi;
