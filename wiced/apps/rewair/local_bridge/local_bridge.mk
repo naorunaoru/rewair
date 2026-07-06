@@ -4,6 +4,7 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_state.c \
                    rewair_drops.c \
                    rewair_tz.c \
+                   rewair_settings.c \
                    rewair_json.c \
                    jsmn.c \
                    web_api.c \

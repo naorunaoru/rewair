@@ -20,3 +20,7 @@ typedef struct
 int  rewair_tz_parse( const char* tz, rewair_tz_rule_t* out );
 void rewair_tz_eval( const rewair_tz_rule_t* rule, uint32_t utc_epoch,
                      int16_t* offset_min_out, uint8_t* dst_out );
+
+/* Day-of-month (1-31) for an M-form rule's week/dow in a given year/month,
+ * e.g. week=5 (last), dow=0 (Sunday). */
+uint32_t rewair_tz_rule_day( uint32_t year, uint8_t month, uint8_t week, uint8_t dow );

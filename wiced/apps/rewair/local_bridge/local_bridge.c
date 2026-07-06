@@ -17,6 +17,8 @@
 #include "internal/wiced_internal_api.h"
 #include "sntp.h"
 #include "rewair_state.h"
+#include "rewair_tz.h"
+#include "rewair_settings.h"
 
 #define SENSOR_PAYLOAD_MAX 512u
 #define SENSOR_RX_BUFFER_SIZE 1024u
@@ -127,11 +129,22 @@ static volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
 static volatile uint32_t wifi_link_was_up = 0u;
 
+static rewair_tz_rule_t current_tz_rule;
+static uint32_t current_tz_rule_valid = 0u;
+static rewair_settings_t current_settings;
+
+void sensor_set_tz_rule( const rewair_tz_rule_t* rule )
+{
+    current_tz_rule = *rule;
+    current_tz_rule_valid = 1u;
+}
+
 static void network_after_ip_ready( void );
 static void sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count );
 static void send_sensor_boot_context( void );
-static void send_tinf_lisbon_for_year( uint32_t year );
-static void send_lisbon_time_context( uint32_t utc_seconds );
+static void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year );
+static void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds );
+static void send_time_context( uint32_t utc_seconds );
 static void send_disp_clock_canary( void );
 static void sensor_reset_cycle( void );
 
@@ -1013,7 +1026,7 @@ static void console_handle_command( int argc, char* argv[] )
         wiced_utc_time_t utc_seconds = 0u;
         if ( wiced_time_get_utc_time( &utc_seconds ) == WICED_SUCCESS && utc_seconds != 0u )
         {
-            send_lisbon_time_context( utc_seconds );
+            send_time_context( utc_seconds );
         }
         else
         {
@@ -1028,7 +1041,7 @@ static void console_handle_command( int argc, char* argv[] )
             printf( "usage: tinf [year]\n" );
             return;
         }
-        send_tinf_lisbon_for_year( year );
+        send_tinf_from_rule( &current_tz_rule, year );
     }
     else if ( cstr_eq( argv[0], "context" ) )
     {
@@ -1411,30 +1424,6 @@ static uint32_t date_days_in_month( uint32_t year, uint32_t month )
     return days[month - 1u];
 }
 
-static uint32_t date_days_before_year( uint32_t year )
-{
-    uint32_t days = 0u;
-    uint32_t y;
-    for ( y = 1970u; y < year; y++ )
-    {
-        days += date_is_leap( y ) != 0 ? 366u : 365u;
-    }
-    return days;
-}
-
-static uint32_t date_time_to_epoch_utc( uint32_t year, uint32_t month, uint32_t day,
-                                        uint32_t hour, uint32_t minute, uint32_t second )
-{
-    uint32_t days = date_days_before_year( year );
-    uint32_t m;
-    for ( m = 1u; m < month; m++ )
-    {
-        days += date_days_in_month( year, m );
-    }
-    days += day - 1u;
-    return ( days * 86400u ) + ( hour * 3600u ) + ( minute * 60u ) + second;
-}
-
 static void epoch_utc_to_wall( uint32_t epoch_seconds, wall_time_t* out )
 {
     uint32_t days = epoch_seconds / 86400u;
@@ -1471,49 +1460,6 @@ static void epoch_utc_to_wall( uint32_t epoch_seconds, wall_time_t* out )
     seconds %= 3600u;
     out->minute = seconds / 60u;
     out->second = seconds % 60u;
-}
-
-static uint32_t date_day_of_week( uint32_t year, uint32_t month, uint32_t day )
-{
-    static const uint8_t month_offsets[] = { 0u, 3u, 2u, 5u, 0u, 3u, 5u, 1u, 4u, 6u, 2u, 4u };
-    if ( month < 3u )
-    {
-        year--;
-    }
-    return ( year + ( year / 4u ) - ( year / 100u ) + ( year / 400u ) +
-             month_offsets[month - 1u] + day ) % 7u;
-}
-
-static uint32_t date_last_sunday( uint32_t year, uint32_t month )
-{
-    uint32_t day = date_days_in_month( year, month );
-    while ( date_day_of_week( year, month, day ) != 0u )
-    {
-        day--;
-    }
-    return day;
-}
-
-static uint32_t lisbon_dst_start_utc( uint32_t year )
-{
-    return date_time_to_epoch_utc( year, 3u, date_last_sunday( year, 3u ), 1u, 0u, 0u );
-}
-
-static uint32_t lisbon_dst_end_utc( uint32_t year )
-{
-    return date_time_to_epoch_utc( year, 10u, date_last_sunday( year, 10u ), 1u, 0u, 0u );
-}
-
-static int32_t lisbon_utc_offset_seconds( uint32_t utc_seconds )
-{
-    wall_time_t utc_wall;
-    uint32_t dst_start;
-    uint32_t dst_end;
-
-    epoch_utc_to_wall( utc_seconds, &utc_wall );
-    dst_start = lisbon_dst_start_utc( utc_wall.year );
-    dst_end = lisbon_dst_end_utc( utc_wall.year );
-    return ( utc_seconds >= dst_start && utc_seconds < dst_end ) ? 3600 : 0;
 }
 
 static void write_dec2( char* out, uint32_t value )
@@ -1676,65 +1622,76 @@ static void send_netw_up( void )
     printf( "[netw] net=%s rssi=%s ip=%s mac=%s\n", net_value, rssi_buf, ip_buf, mac_buf );
 }
 
-static void send_tinf_lisbon_for_year( uint32_t year )
+static void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year )
 {
     char dst_on[15];
     char dst_off[15];
-    char dst_offs[12];
-    wall_time_t dst_on_wall;
-    wall_time_t dst_off_wall;
+    char offs_buf[12];
+    char dst_offs_buf[12];
+    wall_time_t on_wall;
+    wall_time_t off_wall;
 
-    dst_on_wall.year = year;
-    dst_on_wall.month = 3u;
-    dst_on_wall.day = date_last_sunday( year, 3u );
-    dst_on_wall.hour = 1u;
-    dst_on_wall.minute = 0u;
-    dst_on_wall.second = 0u;
-    wall_time_to_compact( &dst_on_wall, dst_on );
-
-    dst_off_wall.year = year;
-    dst_off_wall.month = 10u;
-    dst_off_wall.day = date_last_sunday( year, 10u );
-    dst_off_wall.hour = 2u;
-    dst_off_wall.minute = 0u;
-    dst_off_wall.second = 0u;
-    wall_time_to_compact( &dst_off_wall, dst_off );
-
-    int32_to_cstr( 3600, dst_offs, sizeof( dst_offs ) );
-
-    char* fields[] =
+    if ( rule->has_dst == 0u )
     {
-        "offs", "0",
-        "dst_on", dst_on,
-        "dst_off", dst_off,
-        "dst_offs", dst_offs,
-    };
+        int32_to_cstr( (int32_t)rule->std_offset_min * 60, offs_buf, sizeof( offs_buf ) );
+        char* fields_fixed[] = { "offs", offs_buf, "dst_offs", "0" };
+        sensor_send_frame( "TINF", fields_fixed, 4u );
+        return;
+    }
 
-    sensor_send_frame( "TINF", fields, (uint32_t)( sizeof( fields ) / sizeof( fields[0] ) ) );
+    on_wall.year = year;
+    on_wall.month = rule->start_month;
+    on_wall.day = rewair_tz_rule_day( year, rule->start_month, rule->start_week, rule->start_dow );
+    on_wall.hour = rule->start_time_s / 3600u;
+    on_wall.minute = ( rule->start_time_s % 3600u ) / 60u;
+    on_wall.second = 0u;
+    wall_time_to_compact( &on_wall, dst_on );
+
+    off_wall.year = year;
+    off_wall.month = rule->end_month;
+    off_wall.day = rewair_tz_rule_day( year, rule->end_month, rule->end_week, rule->end_dow );
+    off_wall.hour = rule->end_time_s / 3600u;
+    off_wall.minute = ( rule->end_time_s % 3600u ) / 60u;
+    off_wall.second = 0u;
+    wall_time_to_compact( &off_wall, dst_off );
+
+    int32_to_cstr( (int32_t)rule->std_offset_min * 60, offs_buf, sizeof( offs_buf ) );
+    int32_to_cstr( ( (int32_t)rule->dst_offset_min - (int32_t)rule->std_offset_min ) * 60,
+                   dst_offs_buf, sizeof( dst_offs_buf ) );
+
+    {
+        char* fields[] =
+        {
+            "offs", offs_buf,
+            "dst_on", dst_on,
+            "dst_off", dst_off,
+            "dst_offs", dst_offs_buf,
+        };
+        sensor_send_frame( "TINF", fields, (uint32_t)( sizeof( fields ) / sizeof( fields[0] ) ) );
+    }
 }
 
-static void send_time_lisbon( uint32_t utc_seconds )
+static void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds )
 {
     char time_value[15];
-    int32_t offset = lisbon_utc_offset_seconds( utc_seconds );
-    char* fields[] =
-    {
-        "time", time_value,
-    };
+    int16_t offset_min = 0;
+    uint8_t dst = 0u;
+    char* fields[] = { "time", time_value };
 
-    compact_utc_time_with_offset( utc_seconds, offset, time_value );
+    rewair_tz_eval( rule, utc_seconds, &offset_min, &dst );
+    compact_utc_time_with_offset( utc_seconds, (int32_t)offset_min * 60, time_value );
     sensor_send_frame( "TIME", fields, (uint32_t)( sizeof( fields ) / sizeof( fields[0] ) ) );
-    printf( "[time] sent Lisbon TIME %s offset=%ld\n", time_value, (long)offset );
+    printf( "[time] sent TIME %s offset_min=%d dst=%u\n", time_value, (int)offset_min, (unsigned)dst );
 }
 
-static void send_lisbon_time_context( uint32_t utc_seconds )
+static void send_time_context( uint32_t utc_seconds )
 {
     wall_time_t utc_wall;
 
     epoch_utc_to_wall( utc_seconds, &utc_wall );
-    send_tinf_lisbon_for_year( utc_wall.year );
+    send_tinf_from_rule( &current_tz_rule, utc_wall.year );
     wiced_rtos_delay_milliseconds( 20u );
-    send_time_lisbon( utc_seconds );
+    send_time_from_rule( &current_tz_rule, utc_seconds );
 }
 
 static void send_disp_clock_canary( void )
@@ -1758,7 +1715,7 @@ static void send_sensor_boot_context( void )
     sensor_boot_context_sent = 1u;
     send_netw_up( );
     wiced_rtos_delay_milliseconds( 20u );
-    send_tinf_lisbon_for_year( 2026u );
+    send_tinf_from_rule( &current_tz_rule, 2026u );
 }
 
 static wiced_result_t network_sync_time_once( uint32_t* utc_seconds_out )
@@ -1871,7 +1828,7 @@ static void network_after_ip_ready( void )
         {
             wifi_last_ntp_sync_ms = (uint32_t)now_ms;
         }
-        send_lisbon_time_context( utc_seconds );
+        send_time_context( utc_seconds );
         rewair_state_set_time( utc_seconds, 1u );
     }
 }
@@ -2592,6 +2549,17 @@ void application_start( void )
 
     rewair_state_init( );
 
+    {
+        rewair_tz_rule_t rule;
+
+        rewair_settings_load( &current_settings );
+        if ( rewair_tz_parse( current_settings.tz_posix, &rule ) == 0 )
+        {
+            sensor_set_tz_rule( &rule );
+        }
+        rewair_settings_apply_to_state( &current_settings );
+    }
+
     setvbuf( stdin, NULL, _IONBF, 0 );
     setvbuf( stdout, NULL, _IONBF, 0 );
     setvbuf( stderr, NULL, _IONBF, 0 );
@@ -2632,8 +2600,29 @@ void application_start( void )
 
     sensor_reset_release( );
 
-    while ( 1 )
     {
-        wiced_rtos_delay_milliseconds( 10000u );
+        int16_t last_offset_sent = 0;
+        uint8_t offset_known = 0u;
+
+        while ( 1 )
+        {
+            wiced_rtos_delay_milliseconds( 60000u );
+            if ( current_tz_rule_valid != 0u && wifi_time_synced != 0u )
+            {
+                wiced_utc_time_t now = 0u;
+                int16_t offset_min = 0;
+                uint8_t dst = 0u;
+
+                wiced_time_get_utc_time( &now );
+                rewair_tz_eval( &current_tz_rule, (uint32_t)now, &offset_min, &dst );
+                if ( offset_known == 0u || offset_min != last_offset_sent )
+                {
+                    send_time_context( (uint32_t)now );
+                    rewair_settings_apply_to_state( &current_settings );
+                    last_offset_sent = offset_min;
+                    offset_known = 1u;
+                }
+            }
+        }
     }
 }

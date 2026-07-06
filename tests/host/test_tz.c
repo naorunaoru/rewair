@@ -63,6 +63,10 @@ int main( void )
     assert( rewair_tz_parse( "", &r ) == -1 );
     assert( rewair_tz_parse( "M3.5.0", &r ) == -1 );
 
+    /* Day-of-month for M-form rule (last Sunday of the month) */
+    assert( rewair_tz_rule_day( 2026u, 3u, 5u, 0u ) == 29u );   /* last Sun of Mar 2026 */
+    assert( rewair_tz_rule_day( 2026u, 10u, 5u, 0u ) == 25u );  /* last Sun of Oct 2026 */
+
     printf( "test_tz OK\n" );
     return 0;
 }

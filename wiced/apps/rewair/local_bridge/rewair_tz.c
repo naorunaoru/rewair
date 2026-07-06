@@ -30,11 +30,7 @@ static uint32_t days_in_month( uint32_t year, uint32_t month )
     return dim[month - 1u];
 }
 
-/* Epoch (UTC) of an M-form transition in a given year, given the local offset
- * in effect just before the transition. */
-static uint32_t rule_to_utc_epoch( uint32_t year, uint8_t month, uint8_t week,
-                                   uint8_t dow, uint32_t local_time_s,
-                                   int16_t active_offset_min )
+uint32_t rewair_tz_rule_day( uint32_t year, uint8_t month, uint8_t week, uint8_t dow )
 {
     uint32_t first_days = days_from_civil( year, month, 1u );
     uint32_t first_dow  = weekday_of_days( first_days );
@@ -45,6 +41,17 @@ static uint32_t rule_to_utc_epoch( uint32_t year, uint8_t month, uint8_t week,
     {
         day -= 7u;
     }
+    return day;
+}
+
+/* Epoch (UTC) of an M-form transition in a given year, given the local offset
+ * in effect just before the transition. */
+static uint32_t rule_to_utc_epoch( uint32_t year, uint8_t month, uint8_t week,
+                                   uint8_t dow, uint32_t local_time_s,
+                                   int16_t active_offset_min )
+{
+    uint32_t day = rewair_tz_rule_day( year, month, week, dow );
+
     return days_from_civil( year, month, day ) * 86400u + local_time_s -
            (uint32_t)( (int32_t)active_offset_min * 60 );
 }
