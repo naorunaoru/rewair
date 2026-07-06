@@ -710,6 +710,27 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_update_handler, NULL } },
     { "/api/reset",     "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_reset_handler, NULL } },
+    /* Duplicate POST entries for "text/plain": the web UI POSTs JSON bodies
+     * with Content-Type: text/plain to avoid a CORS preflight, and the WICED
+     * daemon only matches a request to a page entry whose mime equals the
+     * request's Content-Type (or the request has none), scanning subsequent
+     * entries with the same URL on a mime mismatch. */
+    { "/api/join",      "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_join_handler, NULL } },
+    { "/api/forget",    "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_forget_handler, NULL } },
+    { "/api/priority",  "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_priority_handler, NULL } },
+    { "/api/settings",  "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_settings_handler, NULL } },
+    { "/api/time",      "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_time_handler, NULL } },
+    { "/api/disp",      "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_disp_handler, NULL } },
+    { "/api/update",    "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_update_handler, NULL } },
+    { "/api/reset",     "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_reset_handler, NULL } },
 END_OF_HTTP_PAGE_DATABASE( );
 
 wiced_result_t rewair_web_api_start( wiced_interface_t interface )
