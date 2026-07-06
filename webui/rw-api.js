@@ -132,6 +132,11 @@
       };
       const stopPolling = () => { clearInterval(pollTimer); pollTimer = null; };
 
+      /* Defensive: a second subscribe() call would otherwise overwrite `es`
+       * and leak the prior EventSource (it keeps its connection open and
+       * retrying forever). Auto-unsubscribe any live session first. */
+      if (es) { es.close(); es = null; stopPolling(); }
+
       es = new EventSource(BASE + '/api/events');
       es.onmessage = (ev) => {
         esFailures = 0;

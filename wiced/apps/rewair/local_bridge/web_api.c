@@ -92,13 +92,32 @@ static int api_read_body( wiced_http_message_body_t* http_data, char* out, uint3
     return (int)http_data->message_data_length;
 }
 
+/* ---- connected_s: association-start-uptime -> duration ----
+ * rewair_state_snapshot() reports st.connected_s as the uptime (ms/1000) at
+ * which the station associated. Every serializer that hands a snapshot to a
+ * client must convert that into an elapsed-seconds duration before calling
+ * rewair_json_status(), or the client sees a constant "moment of connection"
+ * value instead of a growing duration. This helper is the single place that
+ * conversion happens -- api_status_handler, the SSE broadcaster, and
+ * api_events_handler's initial frame all call it so the logic can't drift
+ * between call sites. */
+static void rewair_apply_connected_duration( rewair_status_t* st )
+{
+    wiced_time_t now_ms = 0;
+
+    wiced_time_get_time( &now_ms );
+    if ( st->wifi_mode == 0u && st->connected_s != 0u )
+    {
+        st->connected_s = (uint32_t)now_ms / 1000u - st->connected_s;
+    }
+}
+
 /* ---- GET /api/status ---- */
 static int32_t api_status_handler( const char* url, wiced_http_response_stream_t* stream,
                                    void* arg, wiced_http_message_body_t* http_data )
 {
     static char buf[API_STATUS_BUF];
     rewair_status_t st;
-    wiced_time_t now_ms = 0;
     int len;
 
     (void)url; (void)arg;
@@ -109,11 +128,7 @@ static int32_t api_status_handler( const char* url, wiced_http_response_stream_t
     }
 
     rewair_state_snapshot( &st );
-    wiced_time_get_time( &now_ms );
-    if ( st.wifi_mode == 0u && st.connected_s != 0u )
-    {
-        st.connected_s = (uint32_t)now_ms / 1000u - st.connected_s;
-    }
+    rewair_apply_connected_duration( &st );
     len = rewair_json_status( &st, buf, sizeof( buf ) );
     if ( len < 0 )
     {
@@ -805,33 +820,27 @@ static void sse_broadcast( const char* payload, uint32_t len )
     wiced_rtos_unlock_mutex( &sse_mutex );
 }
 
+/* Both the state-change wake and the SSE_HEARTBEAT_MS timeout converge here:
+ * every wakeup (spurious or not) takes a fresh snapshot and broadcasts a full
+ * `data:` frame. This means a quiet stream (stable rssi, stalled SENS) still
+ * delivers a fresh connected_s/rssi every SSE_HEARTBEAT_MS instead of a bare
+ * ": ka" comment the UI cannot use -- there is no longer a distinct
+ * keepalive-comment path to obsolete/drift from the real payload. */
 static void sse_thread_main( uint32_t arg )
 {
     static char json[API_STATUS_BUF];
     static char frame[API_STATUS_BUF + 16u];
     rewair_status_t st;
-    wiced_result_t got;
     int len;
     int n;
 
     (void)arg;
     while ( 1 )
     {
-        got = wiced_rtos_get_semaphore( &sse_wake, SSE_HEARTBEAT_MS );
-        if ( got != WICED_SUCCESS )
-        {
-            sse_broadcast( ": ka\n\n", 6u );
-            continue;
-        }
+        (void)wiced_rtos_get_semaphore( &sse_wake, SSE_HEARTBEAT_MS );
+
         rewair_state_snapshot( &st );
-        {
-            wiced_time_t now_ms = 0;
-            wiced_time_get_time( &now_ms );
-            if ( st.wifi_mode == 0u && st.connected_s != 0u )
-            {
-                st.connected_s = (uint32_t)now_ms / 1000u - st.connected_s;
-            }
-        }
+        rewair_apply_connected_duration( &st );
         len = rewair_json_status( &st, json, sizeof( json ) );
         if ( len < 0 )
         {
@@ -868,6 +877,7 @@ static int32_t api_events_handler( const char* url, wiced_http_response_stream_t
         wiced_http_response_stream_write( stream, hdr, (uint32_t)strlen( hdr ) );
     }
     rewair_state_snapshot( &st );
+    rewair_apply_connected_duration( &st );
     len = rewair_json_status( &st, json, sizeof( json ) );
     if ( len > 0 )
     {
