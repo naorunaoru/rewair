@@ -705,6 +705,182 @@ static int32_t api_reset_handler( const char* url, wiced_http_response_stream_t*
     return 0;
 }
 
+#ifdef REWAIR_API_CORS_DEV
+/* ---- GET /api/debug/sflash?addr=<hex>&len=<n<=256> ----
+ * Dev-only external-SPI-flash readback route (Phase 2 Task 1 gate + a
+ * building block for Task 2's write/readback checks). Compiled only when
+ * REWAIR_API_CORS_DEV is defined (dev builds, on for the whole of phase 2).
+ *
+ * For WICED_RAW_DYNAMIC_URL_CONTENT routes, http_server_process_url_request()
+ * passes the *full* original url string (path + "?query") to the generator
+ * unmodified -- unlike WICED_DYNAMIC_URL_CONTENT, which splits query params
+ * off before calling. So the query string has to be located and parsed here. */
+#define API_DEBUG_SFLASH_MAX_LEN 256u
+
+static int debug_hex_nibble( char c, uint8_t* value )
+{
+    if ( c >= '0' && c <= '9' ) { *value = (uint8_t)( c - '0' ); return 1; }
+    if ( c >= 'a' && c <= 'f' ) { *value = (uint8_t)( c - 'a' + 10 ); return 1; }
+    if ( c >= 'A' && c <= 'F' ) { *value = (uint8_t)( c - 'A' + 10 ); return 1; }
+    return 0;
+}
+
+static int debug_parse_hex_u32( const char* text, uint32_t len, uint32_t* out )
+{
+    uint32_t value = 0u;
+    uint32_t i;
+
+    if ( len == 0u || len > 8u )
+    {
+        return 0;
+    }
+    for ( i = 0u; i < len; i++ )
+    {
+        uint8_t nibble = 0u;
+        if ( debug_hex_nibble( text[i], &nibble ) == 0 )
+        {
+            return 0;
+        }
+        value = ( value << 4 ) | nibble;
+    }
+    *out = value;
+    return 1;
+}
+
+static int debug_parse_dec_u32( const char* text, uint32_t len, uint32_t* out )
+{
+    uint32_t value = 0u;
+    uint32_t i;
+
+    if ( len == 0u )
+    {
+        return 0;
+    }
+    for ( i = 0u; i < len; i++ )
+    {
+        if ( text[i] < '0' || text[i] > '9' )
+        {
+            return 0;
+        }
+        value = ( value * 10u ) + (uint32_t)( text[i] - '0' );
+    }
+    *out = value;
+    return 1;
+}
+
+/* Finds "key=" in the query string (the part of url after '?') and copies
+ * its value (up to the next '&' or end of string) into out. Returns the
+ * value length, or -1 if the key is absent. Truncates silently if the value
+ * doesn't fit in out_size (callers bounds-check the numeric result anyway). */
+static int debug_query_get( const char* query, const char* key, char* out, uint32_t out_size )
+{
+    uint32_t key_len = (uint32_t)strlen( key );
+    const char* p = query;
+
+    while ( *p != '\0' )
+    {
+        if ( strncmp( p, key, key_len ) == 0 && p[key_len] == '=' )
+        {
+            const char* v = p + key_len + 1u;
+            uint32_t n = 0u;
+            while ( v[n] != '\0' && v[n] != '&' )
+            {
+                n++;
+            }
+            if ( n >= out_size )
+            {
+                n = out_size - 1u;
+            }
+            memcpy( out, v, n );
+            out[n] = '\0';
+            return (int)n;
+        }
+        /* skip to next "key=value" pair */
+        while ( *p != '\0' && *p != '&' )
+        {
+            p++;
+        }
+        if ( *p == '&' )
+        {
+            p++;
+        }
+    }
+    return -1;
+}
+
+static int32_t api_debug_sflash_handler( const char* url, wiced_http_response_stream_t* stream,
+                                         void* arg, wiced_http_message_body_t* http_data )
+{
+    const char* query;
+    char addr_text[16];
+    char len_text[16];
+    uint32_t addr = 0u;
+    uint32_t len = 0u;
+    uint8_t id[3];
+    uint8_t data[API_DEBUG_SFLASH_MAX_LEN];
+    static char body[ 32u + 2u * API_DEBUG_SFLASH_MAX_LEN + 64u ];
+    int n;
+    uint32_t i;
+
+    (void)arg;
+    if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
+    {
+        api_send_error( stream, HTTP_HEADER_405, "GET only" );
+        return 0;
+    }
+
+    query = strchr( url, '?' );
+    query = ( query != NULL ) ? query + 1 : "";
+
+    if ( debug_query_get( query, "addr", addr_text, sizeof( addr_text ) ) < 0 ||
+         debug_parse_hex_u32( addr_text, (uint32_t)strlen( addr_text ), &addr ) == 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "addr required (hex)" );
+        return 0;
+    }
+    if ( debug_query_get( query, "len", len_text, sizeof( len_text ) ) < 0 ||
+         debug_parse_dec_u32( len_text, (uint32_t)strlen( len_text ), &len ) == 0 ||
+         len == 0u || len > API_DEBUG_SFLASH_MAX_LEN )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "len required, 1..256" );
+        return 0;
+    }
+
+    if ( rewair_sflash_read_id( id ) != 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "sflash id read failed" );
+        return 0;
+    }
+    if ( rewair_sflash_read_bytes( addr, data, len ) != 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "sflash read failed" );
+        return 0;
+    }
+
+    n = snprintf( body, sizeof( body ), "{\"jedec\":\"%02x%02x%02x\",\"addr\":\"%lx\",\"data\":\"",
+                  id[0], id[1], id[2], (unsigned long)addr );
+    if ( n < 0 || (uint32_t)n >= sizeof( body ) )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "buffer overflow" );
+        return 0;
+    }
+    for ( i = 0u; i < len && (uint32_t)n + 2u < sizeof( body ); i++ )
+    {
+        n += snprintf( body + n, sizeof( body ) - (uint32_t)n, "%02x", data[i] );
+    }
+    if ( (uint32_t)n + 2u >= sizeof( body ) )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "buffer overflow" );
+        return 0;
+    }
+    body[n++] = '"';
+    body[n++] = '}';
+
+    api_send( stream, HTTP_HEADER_200, "application/json", body, (uint32_t)n );
+    return 0;
+}
+#endif /* REWAIR_API_CORS_DEV */
+
 /* ---- GET /api/events (SSE) ----
  *
  * Concurrency model:
@@ -919,6 +1095,10 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_update_handler, NULL } },
     { "/api/reset",     "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_reset_handler, NULL } },
+#ifdef REWAIR_API_CORS_DEV
+    { "/api/debug/sflash", "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_debug_sflash_handler, NULL } },
+#endif
     /* Duplicate POST entries for "text/plain": the web UI POSTs JSON bodies
      * with Content-Type: text/plain to avoid a CORS preflight, and the WICED
      * daemon only matches a request to a page entry whose mime equals the

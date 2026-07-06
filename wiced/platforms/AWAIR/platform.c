@@ -99,6 +99,14 @@ const platform_pwm_t platform_pwm_peripherals[] =
 /* PWM peripherals. Used by WICED/platform/MCU/wiced_platform_common.c */
 const platform_spi_t platform_spi_peripherals[] =
 {
+    /* Awair board wiring (empirically reverse-engineered): external SPI flash
+     * (Macronix MX25L1606E) is on SPI1 using the JTAG-shared alternate pins,
+     * NOT the MICRO_SPI_* pins the BCM943362WCD4 reference design used.
+     *   MOSI = PA7  (WICED_GPIO_8)  -- same pin as reference design
+     *   MISO = PB4  (WICED_GPIO_17) -- reference design wrongly used PA6
+     *   SCK  = PB3  (WICED_GPIO_16) -- reference design wrongly used PA5
+     * PB3/PB4 are JTAG TDO/NTRST; debug remains available via SWD (PA13/PA14),
+     * so repurposing them for SPI1 is safe. See README.txt. */
     [WICED_SPI_1]  =
     {
         .port                  = SPI1,
@@ -106,8 +114,8 @@ const platform_spi_t platform_spi_peripherals[] =
         .peripheral_clock_reg  = RCC_APB2Periph_SPI1,
         .peripheral_clock_func = RCC_APB2PeriphClockCmd,
         .pin_mosi              = &platform_gpio_pins[WICED_GPIO_8],
-        .pin_miso              = &platform_gpio_pins[WICED_GPIO_7],
-        .pin_clock             = &platform_gpio_pins[WICED_GPIO_6],
+        .pin_miso              = &platform_gpio_pins[WICED_GPIO_17],
+        .pin_clock             = &platform_gpio_pins[WICED_GPIO_16],
         .tx_dma =
         {
             .controller        = DMA2,

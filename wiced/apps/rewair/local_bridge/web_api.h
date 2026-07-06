@@ -32,3 +32,7 @@ void           sensor_apply_manual_time( uint32_t epoch );
 /* time-zone rule application + time-context push (Task 6) */
 void sensor_set_tz_rule( const rewair_tz_rule_t* rule );
 void send_time_context( uint32_t utc_seconds );
+
+/* External SPI flash bring-up (Phase 2 Task 1). Both return 0 on success. */
+int rewair_sflash_read_id( uint8_t out_id[3] );
+int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size );

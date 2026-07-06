@@ -20,6 +20,8 @@
 #include "rewair_tz.h"
 #include "rewair_settings.h"
 #include "web_api.h"
+#include "spi_flash.h"
+#include "spi_flash_internal.h" /* device_id_t + sflash_read_ID (on GLOBAL_INCLUDES via drivers/spi_flash component) */
 
 #define SENSOR_PAYLOAD_MAX 512u
 #define SENSOR_RX_BUFFER_SIZE 1024u
@@ -152,6 +154,64 @@ void sensor_set_tz_rule( const rewair_tz_rule_t* rule )
 {
     current_tz_rule = *rule;
     current_tz_rule_valid = 1u;
+}
+
+/* ---- External SPI flash (Macronix MX25L1606E) -- Phase 2 Task 1 bring-up ----
+ * Lazily initialized on first use by either the console "sflash" commands or
+ * the /api/debug/sflash route (web_api.c); both share this handle so the SPI
+ * peripheral is only brought up once. Read-only for now: write_allowed is
+ * SFLASH_WRITE_NOT_ALLOWED until a later task explicitly needs writes. */
+static sflash_handle_t rewair_sflash_handle;
+static uint32_t         rewair_sflash_inited = 0u;
+
+static int rewair_sflash_ensure_init( void )
+{
+    if ( rewair_sflash_inited != 0u )
+    {
+        return 0;
+    }
+    if ( init_sflash( &rewair_sflash_handle, NULL, SFLASH_WRITE_NOT_ALLOWED ) != 0 )
+    {
+        printf( "[sflash] init_sflash failed\n" );
+        return -1;
+    }
+    rewair_sflash_inited = 1u;
+    return 0;
+}
+
+/* Returns 0 on success with *out_id filled (3 bytes: manufacturer, memory
+ * type, capacity -- e.g. c2 20 15 for the MX25L1606E), nonzero on failure. */
+int rewair_sflash_read_id( uint8_t out_id[3] )
+{
+    device_id_t id;
+
+    if ( rewair_sflash_ensure_init( ) != 0 )
+    {
+        return -1;
+    }
+    if ( sflash_read_ID( &rewair_sflash_handle, &id ) != 0 )
+    {
+        return -1;
+    }
+    out_id[0] = id.id[0];
+    out_id[1] = id.id[1];
+    out_id[2] = id.id[2];
+    return 0;
+}
+
+/* Returns 0 on success, nonzero on failure. size is bounds-checked by callers
+ * (console command and the dev-gated debug route both cap it). */
+int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size )
+{
+    if ( rewair_sflash_ensure_init( ) != 0 )
+    {
+        return -1;
+    }
+    if ( sflash_read( &rewair_sflash_handle, (unsigned long)addr, out, (unsigned int)size ) != 0 )
+    {
+        return -1;
+    }
+    return 0;
 }
 
 static void network_after_ip_ready( void );
@@ -1411,6 +1471,74 @@ static void wifi_join_index_command( const char* index_text, const char* pass_te
     wifi_join_command( (const char*)scan->SSID.value, pass_text, security, scan, force_security );
 }
 
+/* forward decl: defined later in this file, reused here for hex parsing */
+static int from_hex( char c, uint8_t* value );
+
+#define SFLASH_CONSOLE_READ_MAX 256u
+
+static int parse_hex_addr( const char* text, uint32_t* out )
+{
+    uint32_t value = 0u;
+
+    if ( *text == '\0' )
+    {
+        return 0;
+    }
+    while ( *text != '\0' )
+    {
+        uint8_t nibble = 0u;
+        if ( from_hex( *text, &nibble ) == 0 )
+        {
+            return 0;
+        }
+        value = ( value << 4 ) | nibble;
+        text++;
+    }
+    *out = value;
+    return 1;
+}
+
+static void sflash_id_command( void )
+{
+    uint8_t id[3];
+
+    if ( rewair_sflash_read_id( id ) != 0 )
+    {
+        printf( "[sflash] id read failed\n" );
+        return;
+    }
+    printf( "[sflash] id: %02x %02x %02x\n", id[0], id[1], id[2] );
+}
+
+static void sflash_read_command( const char* addr_text, const char* len_text )
+{
+    uint32_t addr = 0u;
+    uint32_t len = 0u;
+    uint8_t buf[SFLASH_CONSOLE_READ_MAX];
+    uint32_t i;
+
+    if ( parse_hex_addr( addr_text, &addr ) == 0 )
+    {
+        printf( "usage: sflash read <hexaddr> <len>\n" );
+        return;
+    }
+    if ( parse_uint32( len_text, &len ) == 0 || len == 0u || len > SFLASH_CONSOLE_READ_MAX )
+    {
+        printf( "[sflash] len must be 1..%lu\n", (unsigned long)SFLASH_CONSOLE_READ_MAX );
+        return;
+    }
+    if ( rewair_sflash_read_bytes( addr, buf, len ) != 0 )
+    {
+        printf( "[sflash] read failed at 0x%lx len %lu\n", (unsigned long)addr, (unsigned long)len );
+        return;
+    }
+    printf( "[sflash] read 0x%lx len %lu:\n", (unsigned long)addr, (unsigned long)len );
+    for ( i = 0u; i < len; i++ )
+    {
+        printf( "%02x%s", buf[i], ( ( i + 1u ) % 16u == 0u || i + 1u == len ) ? "\n" : " " );
+    }
+}
+
 static void console_print_help( void )
 {
     printf( "commands:\n" );
@@ -1429,6 +1557,8 @@ static void console_print_help( void )
     printf( "  saved\n" );
     printf( "  down\n" );
     printf( "  net\n" );
+    printf( "  sflash id\n" );
+    printf( "  sflash read <hexaddr> <len>\n" );
 }
 
 static void console_handle_command( int argc, char* argv[] )
@@ -1575,6 +1705,21 @@ static void console_handle_command( int argc, char* argv[] )
     {
         wifi_print_status( );
         wifi_print_saved_credentials( );
+    }
+    else if ( cstr_eq( argv[0], "sflash" ) )
+    {
+        if ( argc >= 2 && cstr_eq( argv[1], "id" ) )
+        {
+            sflash_id_command( );
+        }
+        else if ( argc >= 4 && cstr_eq( argv[1], "read" ) )
+        {
+            sflash_read_command( argv[2], argv[3] );
+        }
+        else
+        {
+            printf( "usage: sflash id | sflash read <hexaddr> <len>\n" );
+        }
     }
     else
     {

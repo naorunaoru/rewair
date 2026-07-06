@@ -206,9 +206,13 @@ typedef enum
  */
 #define STDIO_UART ( WICED_UART_1 )
 
-/* SPI flash is present */
-//#define WICED_PLATFORM_INCLUDES_SPI_FLASH
-//#define WICED_SPI_FLASH_CS ( WICED_GPIO_5 )
+/* SPI flash is present: external Macronix MX25L1606E (2 MiB), JEDEC c2 20 15.
+ * CS is a software GPIO on PA15 (WICED_GPIO_15, also JTAG TDI) -- driven
+ * active-low by platform_spi_init()/platform_spi_transfer() in
+ * WICED/platform/MCU/STM32F4xx/peripherals/platform_spi.c, not by SPI1_NSS.
+ * PA15 is safe to repurpose: debug is SWD-only (PA13/PA14) on this board. */
+#define WICED_PLATFORM_INCLUDES_SPI_FLASH
+#define WICED_SPI_FLASH_CS ( WICED_GPIO_15 )
 
 /* Components connected to external I/Os */
 #define WICED_LED1         ( WICED_GPIO_11 )
