@@ -2,3 +2,4 @@ test_drops
 test_tz
 test_req
 test_status
+test_uifs

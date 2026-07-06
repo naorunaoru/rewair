@@ -2,7 +2,9 @@ CC     ?= cc
 SRCDIR := ../../wiced/apps/rewair/local_bridge
 CFLAGS := -std=c99 -Wall -Wextra -Werror -I$(SRCDIR) -DJSMN_PARENT_LINKS
 
-TESTS := test_drops test_tz test_req test_status
+TESTS := test_drops test_tz test_req test_status test_uifs
+
+RWFS_FIXTURE := /tmp/test_uifs_fixture.rwfs
 
 all: $(TESTS)
 
@@ -18,7 +20,12 @@ test_req: test_req.c $(SRCDIR)/rewair_json.c $(SRCDIR)/jsmn.c
 test_status: test_status.c $(SRCDIR)/rewair_json.c $(SRCDIR)/jsmn.c
 	$(CC) $(CFLAGS) -o $@ $^ && ./$@
 
+test_uifs: test_uifs.c $(SRCDIR)/rewair_uifs.c
+	node ../../webui/scripts/pack-rwfs.mjs $(RWFS_FIXTURE) \
+		fixtures/index.html:/ fixtures/app.js:/app.js fixtures/rewair.css:/rewair.css
+	$(CC) $(CFLAGS) -o $@ $^ && ./$@
+
 clean:
-	rm -f $(TESTS)
+	rm -f $(TESTS) $(RWFS_FIXTURE)
 
 .PHONY: all clean
