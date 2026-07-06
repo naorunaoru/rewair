@@ -163,3 +163,165 @@ int rewair_req_get_string_array( const char* body, uint32_t len, const char* key
     *count_out = stored;
     return 1;
 }
+
+#include "rewair_state.h"
+
+/* ---- status serialization ---- */
+
+typedef struct
+{
+    char*    buf;
+    uint32_t size;
+    uint32_t pos;
+    int      overflow;
+} emit_t;
+
+static void emit_raw( emit_t* e, const char* s )
+{
+    while ( *s != '\0' )
+    {
+        if ( e->pos + 1u >= e->size )
+        {
+            e->overflow = 1;
+            return;
+        }
+        e->buf[e->pos++] = *s++;
+    }
+    e->buf[e->pos] = '\0';
+}
+
+static void emit_str( emit_t* e, const char* key, const char* value )
+{
+    char esc[2] = { 0, 0 };
+
+    emit_raw( e, "\"" );
+    emit_raw( e, key );
+    emit_raw( e, "\":\"" );
+    while ( *value != '\0' )
+    {
+        char c = *value++;
+        if ( c == '"' || c == '\\' )
+        {
+            emit_raw( e, "\\" );
+        }
+        else if ( (unsigned char)c < 0x20u )
+        {
+            c = ' ';
+        }
+        esc[0] = c;
+        emit_raw( e, esc );
+    }
+    emit_raw( e, "\"" );
+}
+
+static void emit_int( emit_t* e, const char* key, int32_t value )
+{
+    char num[16];
+
+    emit_raw( e, "\"" );
+    emit_raw( e, key );
+    snprintf( num, sizeof( num ), "\":%ld", (long)value );
+    emit_raw( e, num );
+}
+
+static void emit_centi( emit_t* e, const char* key, int32_t centi )
+{
+    char num[24];
+    int32_t whole = centi / 100;
+    int32_t frac = centi % 100;
+
+    if ( frac < 0 )
+    {
+        frac = -frac;
+    }
+    if ( centi < 0 && whole == 0 )
+    {
+        snprintf( num, sizeof( num ), "\"%s\":-0.%02ld", key, (long)frac );
+    }
+    else
+    {
+        snprintf( num, sizeof( num ), "\"%s\":%ld.%02ld", key, (long)whole, (long)frac );
+    }
+    emit_raw( e, num );
+}
+
+static void emit_bool( emit_t* e, const char* key, uint8_t value )
+{
+    emit_raw( e, "\"" );
+    emit_raw( e, key );
+    emit_raw( e, value != 0u ? "\":true" : "\":false" );
+}
+
+int rewair_json_status( const struct rewair_status* st, char* buf, uint32_t buf_size )
+{
+    emit_t e = { buf, buf_size, 0u, 0 };
+    static const char* disp_names[3] = { "score", "clock", "sensors" };
+
+    emit_raw( &e, "{" );
+    emit_str( &e, "name", st->name );
+    emit_raw( &e, "," );
+    emit_str( &e, "fw", st->fw );
+
+    emit_raw( &e, ",\"score\":{" );
+    emit_int( &e, "value", (int32_t)st->score );
+    emit_raw( &e, "," );
+    emit_str( &e, "color", st->score_color );
+    emit_raw( &e, ",\"indices\":{" );
+    emit_int( &e, "temp", st->idx_temp );  emit_raw( &e, "," );
+    emit_int( &e, "humid", st->idx_humid ); emit_raw( &e, "," );
+    emit_int( &e, "co2", st->idx_co2 );    emit_raw( &e, "," );
+    emit_int( &e, "voc", st->idx_voc );    emit_raw( &e, "," );
+    emit_int( &e, "dust", st->idx_dust );
+    emit_raw( &e, "}}" );
+
+    emit_raw( &e, ",\"sens\":{" );
+    emit_centi( &e, "temp", st->sens.temp );   emit_raw( &e, "," );
+    emit_centi( &e, "humid", st->sens.humid ); emit_raw( &e, "," );
+    emit_centi( &e, "co2", st->sens.co2 );     emit_raw( &e, "," );
+    emit_centi( &e, "voc", st->sens.voc );     emit_raw( &e, "," );
+    emit_centi( &e, "dust", st->sens.dust );   emit_raw( &e, "," );
+    emit_int( &e, "light", st->sens.light );
+    emit_raw( &e, "}" );
+
+    if ( st->wifi_mode == 0u )
+    {
+        emit_raw( &e, ",\"wifi\":{\"mode\":\"sta\"," );
+        emit_str( &e, "ssid", st->ssid );          emit_raw( &e, "," );
+        emit_int( &e, "rssi", st->rssi );          emit_raw( &e, "," );
+        emit_str( &e, "ip", st->ip );              emit_raw( &e, "," );
+        emit_str( &e, "gw", st->gw );              emit_raw( &e, "," );
+        emit_str( &e, "dns", st->dns );            emit_raw( &e, "," );
+        emit_str( &e, "mac", st->mac );            emit_raw( &e, "," );
+        emit_int( &e, "connected_s", (int32_t)st->connected_s ); emit_raw( &e, "," );
+        emit_int( &e, "drops", (int32_t)st->drops );             emit_raw( &e, "," );
+        emit_int( &e, "saved_count", (int32_t)st->saved_count );
+        emit_raw( &e, "}" );
+    }
+    else
+    {
+        emit_raw( &e, ",\"wifi\":{\"mode\":\"ap\"," );
+        emit_str( &e, "ap_ssid", st->ap_ssid );    emit_raw( &e, "," );
+        emit_str( &e, "ap_ip", st->ap_ip );        emit_raw( &e, "," );
+        emit_int( &e, "saved_count", (int32_t)st->saved_count );
+        emit_raw( &e, "}" );
+    }
+
+    emit_raw( &e, ",\"time\":{" );
+    emit_bool( &e, "valid", st->time_valid );  emit_raw( &e, "," );
+    emit_int( &e, "epoch", (int32_t)st->epoch ); emit_raw( &e, "," );
+    emit_bool( &e, "synced", st->time_synced );
+    emit_raw( &e, "}" );
+
+    emit_raw( &e, ",\"settings\":{" );
+    emit_str( &e, "name", st->name );                    emit_raw( &e, "," );
+    emit_str( &e, "units", st->units == 0u ? "c" : "f" ); emit_raw( &e, "," );
+    emit_int( &e, "tz_offset", st->tz_offset_min );      emit_raw( &e, "," );
+    emit_bool( &e, "tz_dst", st->tz_dst );               emit_raw( &e, "," );
+    emit_str( &e, "tz_zone", st->tz_zone );              emit_raw( &e, "," );
+    emit_str( &e, "tz_posix", st->tz_posix );            emit_raw( &e, "," );
+    emit_str( &e, "time_mode", st->time_mode == 0u ? "auto" : "manual" ); emit_raw( &e, "," );
+    emit_str( &e, "disp_mode", disp_names[ st->disp_mode > 2u ? 0u : st->disp_mode ] );
+    emit_raw( &e, "}}" );
+
+    return e.overflow != 0 ? -1 : (int)e.pos;
+}
