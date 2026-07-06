@@ -16,6 +16,7 @@
 #include "wiced_tcpip.h"
 #include "internal/wiced_internal_api.h"
 #include "sntp.h"
+#include "rewair_state.h"
 
 #define SENSOR_PAYLOAD_MAX 512u
 #define SENSOR_RX_BUFFER_SIZE 1024u
@@ -41,6 +42,7 @@
 #define SENS_CO2   (1u << 2)
 #define SENS_VOC   (1u << 3)
 #define SENS_DUST  (1u << 4)
+#define SENS_LIGHT (1u << 5)
 #define SENS_ALL   (SENS_TEMP | SENS_HUMID | SENS_CO2 | SENS_VOC | SENS_DUST)
 
 typedef struct
@@ -61,6 +63,7 @@ typedef struct
     int32_t co2;
     int32_t voc;
     int32_t dust;
+    int32_t light;
 } sens_values_t;
 
 static sensor_rx_t sensor_rx;
@@ -70,6 +73,8 @@ static wiced_thread_t network_thread;
 static wiced_mutex_t sensor_uart_tx_mutex;
 static wiced_ring_buffer_t sensor_uart_rx_buffer;
 static uint8_t sensor_uart_rx_data[SENSOR_RX_BUFFER_SIZE];
+
+#define SENSOR_UART_ERROR_MASK ( USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE )
 
 static const wiced_uart_config_t sensor_uart_config =
 {
@@ -91,6 +96,14 @@ static volatile uint32_t sensor_disp_clock_canary_sent = 0u;
 static volatile uint32_t sensor_uart_rx_bytes = 0u;
 static volatile uint32_t sensor_uart_error_flags = 0u;
 static volatile uint32_t sensor_uart_error_count = 0u;
+static volatile uint32_t sensor_uart_error_report_count = 0u;
+static volatile uint32_t sensor_uart_error_reported_flags = 0u;
+static volatile uint32_t sensor_uart_error_clear_count = 0u;
+static volatile uint32_t sensor_uart_last_clear_sr = 0u;
+static volatile uint32_t sensor_uart_last_clear_dr = 0u;
+static volatile uint32_t sensor_uart_last_clear_after_sr = 0u;
+static volatile uint32_t sensor_uart_last_rx_byte = 0xffffffffu;
+static volatile uint32_t sensor_uart_last_rx_sr = 0u;
 static volatile uint32_t sensor_uart_tx_count = 0u;
 static volatile uint32_t sensor_uart_tx_drop_count = 0u;
 static volatile uint32_t sensor_uart_wiced_tx_fail_count = 0u;
@@ -112,6 +125,7 @@ static volatile uint32_t wifi_join_in_progress = 0u;
 static volatile uint32_t wifi_time_synced = 0u;
 static volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
+static volatile uint32_t wifi_link_was_up = 0u;
 
 static void network_after_ip_ready( void );
 static void sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count );
@@ -554,6 +568,29 @@ static int wifi_dct_has_stored_ap( void )
     present = ap->details.SSID.length != 0u && ap->details.SSID.length <= SSID_NAME_SIZE;
     wiced_dct_read_unlock( ap, WICED_FALSE );
     return present;
+}
+
+static uint32_t wifi_dct_saved_count( void )
+{
+    platform_dct_wifi_config_t* wifi_config = NULL;
+    uint32_t count = 0u;
+    uint32_t i;
+
+    if ( wiced_dct_read_lock( (void**)&wifi_config, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
+                              0, sizeof( *wifi_config ) ) != WICED_SUCCESS )
+    {
+        return 0u;
+    }
+    for ( i = 0u; i < CONFIG_AP_LIST_SIZE; i++ )
+    {
+        if ( wifi_config->stored_ap_list[i].details.SSID.length != 0u &&
+             wifi_config->stored_ap_list[i].details.SSID.length <= SSID_NAME_SIZE )
+        {
+            count++;
+        }
+    }
+    wiced_dct_read_unlock( wifi_config, WICED_FALSE );
+    return count;
 }
 
 static void wifi_print_saved_credentials( void )
@@ -1778,6 +1815,46 @@ static void network_after_ip_ready( void )
     send_netw_up( );
     wiced_rtos_delay_milliseconds( 20u );
 
+    {
+        wiced_ip_address_t addr;
+        wiced_mac_t mac;
+        int32_t rssi = 0;
+        char ip_buf[16] = "0.0.0.0";
+        char gw_buf[16] = "0.0.0.0";
+        char dns_buf[16] = "0.0.0.0";
+        char mac_buf[18] = "00:00:00:00:00:00";
+        wiced_config_ap_entry_t* ap = NULL;
+        char ssid_buf[33] = "";
+
+        if ( wiced_ip_get_ipv4_address( WICED_STA_INTERFACE, &addr ) == WICED_SUCCESS )
+        {
+            ipv4_to_cstr( &addr, ip_buf );
+        }
+        if ( wiced_ip_get_gateway_address( WICED_STA_INTERFACE, &addr ) == WICED_SUCCESS )
+        {
+            ipv4_to_cstr( &addr, gw_buf );
+            /* LwIP DNS getter not exposed in this SDK; gateway is the typical
+             * home-router DNS relay, so report it as DNS too. */
+            ipv4_to_cstr( &addr, dns_buf );
+        }
+        if ( wiced_wifi_get_mac_address( &mac ) == WICED_SUCCESS )
+        {
+            mac_to_cstr( &mac, mac_buf );
+        }
+        wwd_wifi_get_rssi( &rssi );
+        if ( wiced_dct_read_lock( (void**)&ap, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
+                                  OFFSETOF( platform_dct_wifi_config_t, stored_ap_list ),
+                                  sizeof( *ap ) ) == WICED_SUCCESS )
+        {
+            uint32_t n = ap->details.SSID.length <= 32u ? ap->details.SSID.length : 32u;
+            memcpy( ssid_buf, ap->details.SSID.value, n );
+            ssid_buf[n] = '\0';
+            wiced_dct_read_unlock( ap, WICED_FALSE );
+        }
+        rewair_state_set_wifi_sta( ssid_buf, rssi, ip_buf, gw_buf, dns_buf, mac_buf,
+                                   wifi_dct_saved_count( ) );
+    }
+
     if ( wiced_time_get_time( &now_ms ) == WICED_SUCCESS )
     {
         if ( wifi_time_synced != 0u &&
@@ -1795,6 +1872,7 @@ static void network_after_ip_ready( void )
             wifi_last_ntp_sync_ms = (uint32_t)now_ms;
         }
         send_lisbon_time_context( utc_seconds );
+        rewair_state_set_time( utc_seconds, 1u );
     }
 }
 
@@ -1831,6 +1909,11 @@ static void sens_parse_pair( sens_values_t* sens, const char* key, const char* v
         sens->dust = parsed;
         sens->seen |= SENS_DUST;
     }
+    else if ( cstr_eq( key, "light" ) )
+    {
+        sens->light = parsed;
+        sens->seen |= SENS_LIGHT;
+    }
 }
 
 static char* score_color( uint32_t score )
@@ -1850,6 +1933,33 @@ static char* score_color( uint32_t score )
     return purple;
 }
 
+typedef struct
+{
+    uint32_t score;
+    uint8_t  idx[5];   /* temp, humid, co2, voc, dust */
+    char*    color;
+} sens_score_t;
+
+static void sens_compute_score( const sens_values_t* sens, sens_score_t* out )
+{
+    uint32_t penalty;
+
+    out->idx[0] = (uint8_t)index_outside_range( sens->temp, 1800, 2600, 200 );
+    out->idx[1] = (uint8_t)index_outside_range( sens->humid, 3000, 6000, 1000 );
+    out->idx[2] = (uint8_t)index_above( sens->co2, 100000, 40000 );
+    out->idx[3] = (uint8_t)index_above( sens->voc, 33300, 33300 );
+    out->idx[4] = (uint8_t)index_above( sens->dust, 1200, 1200 );
+
+    penalty  = penalty_outside_range( sens->temp, 1800, 2600, 1200, 8u );
+    penalty += penalty_outside_range( sens->humid, 3000, 6000, 4000, 8u );
+    penalty += penalty_above( sens->co2, 100000, 80000, 25u );
+    penalty += penalty_above( sens->voc, 33300, 100000, 25u );
+    penalty += penalty_above( sens->dust, 1200, 6000, 34u );
+
+    out->score = penalty < 100u ? 100u - penalty : 0u;
+    out->color = score_color( out->score );
+}
+
 static void send_scor_from_sens( const sens_values_t* sens )
 {
     static char empty[] = "";
@@ -1864,32 +1974,16 @@ static void send_scor_from_sens( const sens_values_t* sens )
     char co2_value_buf[12];
     char voc_value_buf[12];
     char dust_value_buf[12];
-    uint32_t temp_index = index_outside_range( sens->temp, 1800, 2600, 200 );
-    uint32_t humid_index = index_outside_range( sens->humid, 3000, 6000, 1000 );
-    uint32_t co2_index = index_above( sens->co2, 100000, 40000 );
-    uint32_t voc_index = index_above( sens->voc, 33300, 33300 );
-    uint32_t dust_index = index_above( sens->dust, 1200, 1200 );
-    uint32_t penalty = penalty_outside_range( sens->temp, 1800, 2600, 1200, 8u );
-    uint32_t score = 0u;
-    char* color;
+    sens_score_t computed;
 
-    penalty += penalty_outside_range( sens->humid, 3000, 6000, 4000, 8u );
-    penalty += penalty_above( sens->co2, 100000, 80000, 25u );
-    penalty += penalty_above( sens->voc, 33300, 100000, 25u );
-    penalty += penalty_above( sens->dust, 1200, 6000, 34u );
-    if ( penalty < 100u )
-    {
-        score = 100u - penalty;
-    }
+    sens_compute_score( sens, &computed );
 
-    color = score_color( score );
-
-    int32_to_cstr( (int32_t)score, score_buf, sizeof( score_buf ) );
-    int32_to_cstr( (int32_t)temp_index, temp_index_buf, sizeof( temp_index_buf ) );
-    int32_to_cstr( (int32_t)humid_index, humid_index_buf, sizeof( humid_index_buf ) );
-    int32_to_cstr( (int32_t)co2_index, co2_index_buf, sizeof( co2_index_buf ) );
-    int32_to_cstr( (int32_t)voc_index, voc_index_buf, sizeof( voc_index_buf ) );
-    int32_to_cstr( (int32_t)dust_index, dust_index_buf, sizeof( dust_index_buf ) );
+    int32_to_cstr( (int32_t)computed.score, score_buf, sizeof( score_buf ) );
+    int32_to_cstr( (int32_t)computed.idx[0], temp_index_buf, sizeof( temp_index_buf ) );
+    int32_to_cstr( (int32_t)computed.idx[1], humid_index_buf, sizeof( humid_index_buf ) );
+    int32_to_cstr( (int32_t)computed.idx[2], co2_index_buf, sizeof( co2_index_buf ) );
+    int32_to_cstr( (int32_t)computed.idx[3], voc_index_buf, sizeof( voc_index_buf ) );
+    int32_to_cstr( (int32_t)computed.idx[4], dust_index_buf, sizeof( dust_index_buf ) );
     int32_to_cstr( centi_to_int( sens->temp ), temp_value_buf, sizeof( temp_value_buf ) );
     int32_to_cstr( centi_to_int( sens->humid ), humid_value_buf, sizeof( humid_value_buf ) );
     int32_to_cstr( centi_to_int( sens->co2 ), co2_value_buf, sizeof( co2_value_buf ) );
@@ -1900,7 +1994,7 @@ static void send_scor_from_sens( const sens_values_t* sens )
         char* fields[] =
         {
             "score", score_buf,
-            "color", color,
+            "color", computed.color,
             "index", empty,
             "temp", temp_index_buf,
             "humid", humid_index_buf,
@@ -1919,13 +2013,25 @@ static void send_scor_from_sens( const sens_values_t* sens )
     }
 
     printf( "[auto] score=%s color=%s t=%s h=%s co2=%s voc=%s dust=%s\n",
-            score_buf, color, temp_value_buf, humid_value_buf, co2_value_buf,
+            score_buf, computed.color, temp_value_buf, humid_value_buf, co2_value_buf,
             voc_value_buf, dust_value_buf );
+
+    {
+        rewair_sens_t cache_sens;
+
+        cache_sens.temp = sens->temp;
+        cache_sens.humid = sens->humid;
+        cache_sens.co2 = sens->co2;
+        cache_sens.voc = sens->voc;
+        cache_sens.dust = sens->dust;
+        cache_sens.light = ( sens->seen & SENS_LIGHT ) != 0u ? centi_to_int( sens->light ) : 0;
+        rewair_state_set_sens( &cache_sens, computed.score, computed.color, computed.idx );
+    }
 }
 
 static void maybe_auto_score_sens( const sensor_rx_t* rx, uint8_t trailer )
 {
-    sens_values_t sens = { 0u, 0, 0, 0, 0, 0 };
+    sens_values_t sens = { 0u, 0, 0, 0, 0, 0, 0 };
     uint32_t offset = 0u;
     const char* key;
     wiced_time_t now_ms;
@@ -2111,10 +2217,73 @@ static wiced_result_t sensor_uart_start( void )
 
 static void sensor_uart_note_status( uint32_t sr )
 {
-    if ( ( sr & ( USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE ) ) != 0u )
+    uint32_t error_bits = sr & SENSOR_UART_ERROR_MASK;
+
+    if ( error_bits != 0u )
     {
-        sensor_uart_error_flags |= sr & ( USART_SR_ORE | USART_SR_NE | USART_SR_FE | USART_SR_PE );
+        uint32_t should_report = 0u;
+
+        sensor_uart_error_flags |= error_bits;
         sensor_uart_error_count++;
+        if ( sensor_uart_error_report_count < 4u ||
+             ( error_bits & ~sensor_uart_error_reported_flags ) != 0u ||
+             ( sensor_uart_error_count % 1000u ) == 0u )
+        {
+            should_report = 1u;
+        }
+
+        if ( should_report != 0u )
+        {
+            wiced_time_t now_ms = 0u;
+            uint32_t gpioa_idr = GPIOA->IDR;
+            uint32_t gpiob_idr = GPIOB->IDR;
+
+            (void)wiced_time_get_time( &now_ms );
+            printf( "[uart-err] tick=%lu sr=0x%08lx bits=%c%c%c%c count=%lu "
+                    "rx=%lu last_rx=0x%02lx last_rx_sr=0x%08lx state=%lu pos=%lu "
+                    "pa3=%lu pb12=%lu\n",
+                    (unsigned long)now_ms,
+                    (unsigned long)sr,
+                    ( sr & USART_SR_PE ) != 0u ? 'P' : '-',
+                    ( sr & USART_SR_FE ) != 0u ? 'F' : '-',
+                    ( sr & USART_SR_NE ) != 0u ? 'N' : '-',
+                    ( sr & USART_SR_ORE ) != 0u ? 'O' : '-',
+                    (unsigned long)sensor_uart_error_count,
+                    (unsigned long)sensor_uart_rx_bytes,
+                    (unsigned long)( sensor_uart_last_rx_byte & 0xffu ),
+                    (unsigned long)sensor_uart_last_rx_sr,
+                    (unsigned long)sensor_rx.state,
+                    (unsigned long)sensor_rx.pos,
+                    ( gpioa_idr >> 3 ) & 1u,
+                    ( gpiob_idr >> 12 ) & 1u );
+            sensor_uart_error_report_count++;
+            sensor_uart_error_reported_flags |= error_bits;
+        }
+    }
+}
+
+static void sensor_uart_clear_latched_error( uint32_t status )
+{
+    if ( ( status & SENSOR_UART_ERROR_MASK ) != 0u )
+    {
+        uint32_t clear_sr = USART2->SR;
+        uint32_t clear_dr = USART2->DR;
+        uint32_t after_sr = USART2->SR;
+
+        sensor_uart_error_clear_count++;
+        sensor_uart_last_clear_sr = clear_sr;
+        sensor_uart_last_clear_dr = clear_dr;
+        sensor_uart_last_clear_after_sr = after_sr;
+
+        printf( "[uart-clear] count=%lu sr=0x%08lx dr=0x%02lx after=0x%08lx bits=%c%c%c%c\n",
+                (unsigned long)sensor_uart_error_clear_count,
+                (unsigned long)clear_sr,
+                (unsigned long)( clear_dr & 0xffu ),
+                (unsigned long)after_sr,
+                ( after_sr & USART_SR_PE ) != 0u ? 'P' : '-',
+                ( after_sr & USART_SR_FE ) != 0u ? 'F' : '-',
+                ( after_sr & USART_SR_NE ) != 0u ? 'N' : '-',
+                ( after_sr & USART_SR_ORE ) != 0u ? 'O' : '-' );
     }
 }
 
@@ -2123,13 +2292,22 @@ static void sensor_uart_diag( uint32_t status )
     uint32_t gpioa_idr = GPIOA->IDR;
     uint32_t gpiob_idr = GPIOB->IDR;
 
-    printf( "[diag] usart2_sr=0x%08lx pa3=%lu pb12=%lu rx=%lu err=0x%08lx/%lu\n",
+    printf( "[diag] usart2_sr=0x%08lx sr_bits=%c%c%c%c pa3=%lu pb12=%lu "
+            "rx=%lu err=0x%08lx/%lu err_bits=%c%c%c%c\n",
             status,
+            ( status & USART_SR_PE ) != 0u ? 'P' : '-',
+            ( status & USART_SR_FE ) != 0u ? 'F' : '-',
+            ( status & USART_SR_NE ) != 0u ? 'N' : '-',
+            ( status & USART_SR_ORE ) != 0u ? 'O' : '-',
             ( gpioa_idr >> 3 ) & 1u,
             ( gpiob_idr >> 12 ) & 1u,
             sensor_uart_rx_bytes,
             sensor_uart_error_flags,
-            sensor_uart_error_count );
+            sensor_uart_error_count,
+            ( sensor_uart_error_flags & USART_SR_PE ) != 0u ? 'P' : '-',
+            ( sensor_uart_error_flags & USART_SR_FE ) != 0u ? 'F' : '-',
+            ( sensor_uart_error_flags & USART_SR_NE ) != 0u ? 'N' : '-',
+            ( sensor_uart_error_flags & USART_SR_ORE ) != 0u ? 'O' : '-' );
 
     if ( sensor_raw_trace_reported != sensor_raw_trace_count )
     {
@@ -2157,8 +2335,11 @@ static void sensor_uart_stat( uint32_t status, uint32_t now_ms )
     uint32_t last_sens_age = sensor_last_sens_ms == 0u ? 0xffffffffu : (uint32_t)( now_ms - sensor_last_sens_ms );
 
     printf( "[stat] tick=%lu rx=%lu sens=%lu last_rx_ms=%lu last_sens_ms=%lu "
-            "state=%lu pos=%lu err=0x%08lx/%lu tx=%lu fail=%lu drop=%lu last_tx=%lu "
-            "tx_sr=0x%08lx->0x%08lx netw=%lu nudge=%lu disp=%lu last=%.4s/0x%02lx sr=0x%08lx\n",
+            "state=%lu pos=%lu err=0x%08lx/%lu err_bits=%c%c%c%c "
+            "clr=%lu/0x%08lx/0x%02lx/0x%08lx "
+            "tx=%lu fail=%lu drop=%lu last_tx=%lu "
+            "tx_sr=0x%08lx->0x%08lx netw=%lu nudge=%lu disp=%lu last=%.4s/0x%02lx "
+            "sr=0x%08lx sr_bits=%c%c%c%c\n",
             (unsigned long)now_ms,
             (unsigned long)sensor_uart_rx_bytes,
             (unsigned long)sensor_sens_count,
@@ -2168,6 +2349,14 @@ static void sensor_uart_stat( uint32_t status, uint32_t now_ms )
             (unsigned long)sensor_rx.pos,
             (unsigned long)sensor_uart_error_flags,
             (unsigned long)sensor_uart_error_count,
+            ( sensor_uart_error_flags & USART_SR_PE ) != 0u ? 'P' : '-',
+            ( sensor_uart_error_flags & USART_SR_FE ) != 0u ? 'F' : '-',
+            ( sensor_uart_error_flags & USART_SR_NE ) != 0u ? 'N' : '-',
+            ( sensor_uart_error_flags & USART_SR_ORE ) != 0u ? 'O' : '-',
+            (unsigned long)sensor_uart_error_clear_count,
+            (unsigned long)sensor_uart_last_clear_sr,
+            (unsigned long)( sensor_uart_last_clear_dr & 0xffu ),
+            (unsigned long)sensor_uart_last_clear_after_sr,
             (unsigned long)sensor_uart_tx_count,
             (unsigned long)sensor_uart_wiced_tx_fail_count,
             (unsigned long)sensor_uart_tx_drop_count,
@@ -2179,7 +2368,11 @@ static void sensor_uart_stat( uint32_t status, uint32_t now_ms )
             (unsigned long)sensor_disp_clock_canary_sent,
             sensor_last_frame_cmd,
             (unsigned long)sensor_last_frame_trailer,
-            (unsigned long)status );
+            (unsigned long)status,
+            ( status & USART_SR_PE ) != 0u ? 'P' : '-',
+            ( status & USART_SR_FE ) != 0u ? 'F' : '-',
+            ( status & USART_SR_NE ) != 0u ? 'N' : '-',
+            ( status & USART_SR_ORE ) != 0u ? 'O' : '-' );
 }
 
 static void sensor_maybe_nudge_boot( uint32_t now_ms )
@@ -2240,6 +2433,8 @@ static void sensor_thread_main( uint32_t arg )
         {
             uint32_t trace_count = sensor_raw_trace_count;
             status = USART2->SR;
+            sensor_uart_last_rx_byte = value;
+            sensor_uart_last_rx_sr = status;
             sensor_uart_note_status( status );
             if ( wiced_time_get_time( &now_ms ) == WICED_SUCCESS )
             {
@@ -2257,6 +2452,7 @@ static void sensor_thread_main( uint32_t arg )
         {
             status = USART2->SR;
             sensor_uart_note_status( status );
+            sensor_uart_clear_latched_error( status );
         }
 
         if ( sensor_reset_released != 0u && sensor_sens_seen == 0u && diag_count < 12u )
@@ -2286,7 +2482,20 @@ static void sensor_thread_main( uint32_t arg )
 
 static void sensor_reset_release( void )
 {
-    sensor_reset_cycle( );
+    sensor_boot_context_sent = 0u;
+    sensor_sens_seen = 0u;
+    sensor_netw_boot_pulses = 0u;
+    sensor_netw_nudge_count = 0u;
+    sensor_last_nudge_ms = 0u;
+    sensor_disp_clock_canary_sent = 0u;
+    sensor_raw_trace_count = 0u;
+    sensor_raw_trace_reported = 0u;
+    sensor_frame_reset( &sensor_rx );
+
+    wiced_gpio_init( AWAIR_SENSOR_RESET, OUTPUT_PUSH_PULL );
+    wiced_gpio_output_high( AWAIR_SENSOR_RESET );
+    sensor_reset_released = 1u;
+    printf( "[boot] sensor reset line released on PB12\n" );
 }
 
 static void sensor_reset_cycle( void )
@@ -2303,18 +2512,18 @@ static void sensor_reset_cycle( void )
 
     wiced_gpio_init( AWAIR_SENSOR_RESET, OUTPUT_PUSH_PULL );
     wiced_gpio_output_low( AWAIR_SENSOR_RESET );
-    wiced_rtos_delay_milliseconds( 50u );
+    wiced_rtos_delay_milliseconds( 10u );
     wiced_gpio_output_high( AWAIR_SENSOR_RESET );
     sensor_reset_released = 1u;
-    printf( "[boot] sensor reset released on PB12\n" );
+    printf( "[boot] sensor reset pulse on PB12\n" );
 }
 
-static void sensor_reset_hold_early( void )
+static void sensor_reset_release_early( void )
 {
     RCC->AHB1ENR |= RCC_AHB1Periph_GPIOB;
     (void)RCC->AHB1ENR;
 
-    GPIOB->ODR &= ~( 1u << 12 );
+    GPIOB->ODR |= ( 1u << 12 );
     GPIOB->MODER = ( GPIOB->MODER & ~( 3u << 24 ) ) | ( 1u << 24 );
     GPIOB->OTYPER &= ~( 1u << 12 );
     GPIOB->OSPEEDR = ( GPIOB->OSPEEDR & ~( 3u << 24 ) ) | ( 2u << 24 );
@@ -2335,16 +2544,24 @@ static void network_thread_main( uint32_t arg )
         {
             if ( wiced_network_is_up( WICED_STA_INTERFACE ) == WICED_TRUE )
             {
+                wifi_link_was_up = 1u;
                 network_after_ip_ready( );
             }
             else if ( wifi_dct_has_stored_ap( ) != 0 )
             {
+                if ( wifi_link_was_up != 0u )
+                {
+                    printf( "[wifi] link dropped; will rejoin from DCT\n" );
+                    rewair_state_wifi_drop( );
+                    wifi_link_was_up = 0u;
+                }
                 printf( "[wifi] autojoin from DCT\n" );
                 result = wiced_network_up( WICED_STA_INTERFACE, WICED_USE_EXTERNAL_DHCP_SERVER, NULL );
                 if ( result == WICED_SUCCESS )
                 {
                     printf( "[wifi] autojoin ready\n" );
                     wifi_print_status( );
+                    wifi_link_was_up = 1u;
                     network_after_ip_ready( );
                 }
                 else
@@ -2364,7 +2581,7 @@ void application_start( void )
 {
     wiced_result_t result;
 
-    sensor_reset_hold_early( );
+    sensor_reset_release_early( );
 
     WPRINT_WICED_INFO( ( "\nStarting WICED v" WICED_VERSION "\n" ) );
     result = wiced_core_init( );
@@ -2372,6 +2589,8 @@ void application_start( void )
     {
         return;
     }
+
+    rewair_state_init( );
 
     setvbuf( stdin, NULL, _IONBF, 0 );
     setvbuf( stdout, NULL, _IONBF, 0 );
