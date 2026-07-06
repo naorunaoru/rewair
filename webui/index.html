@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en" data-dark="0">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rewair</title>
+<!-- ============================================================
+  REWAIR WEB UI — Preact port
+  ============================================================
+  Same product as the vanilla build, restructured into Preact +
+  htm components so each concept is defined ONCE. The network
+  "row", signal bars, and status string are shared by both the
+  Network section and the saved-networks manager (no drift).
+
+  Runtime: Preact (~3 KB gz) + htm (~0.5 KB), no build step —
+  htm tagged templates run in the browser. For the EMW3165 you
+  vendor preact + htm into flash and inline the rw-*.js files;
+  no CDN, no network dependency.
+
+  Files
+  - rewair.css         tokens + components (shared with vanilla)
+  - rw-api.js          production window.RewairAPI: fetch/EventSource
+                       adapter over the device HTTP API
+  - rw-lib.js          helpers + Signal/NetworkRow/Matrix primitives
+  - rw-widgets.js      ScoreHero, Sensors, DisplaySelector
+  - rw-network.js      NetworkSection, Manager, Details/Connect modals
+  - rw-settings.js     name/units/time/timezone
+  - rw-app.js          App root: polling, theme, modal routing
+
+  HTTP API (implemented in local_bridge.c)
+  - GET  /api/status   -> { name, fw, score{value,color,indices},
+                            sens{temp,humid,co2,voc,dust,light},
+                            wifi(sta|ap){…,saved_count}, time{valid,epoch,synced},
+                            settings{name,units,tz_offset,tz_dst,tz_zone,time_mode,disp_mode} }
+  - GET  /api/scan     -> [ {ssid,rssi,sec} ]
+  - GET  /api/networks -> [ {ssid,sec,saved,in_range,rssi,connected} ]  (priority order)
+  - POST /api/join {ssid,pass} · /api/forget {ssid} · /api/priority {order:[ssid…]}
+  - POST /api/settings {patch} · /api/time {epoch} · /api/disp {mode}
+  - POST /api/update (firmware .bin, streamed) · /api/reset (factory)
+  - GET  /api/events   -> Server-Sent Events stream of status frames
+  ============================================================ -->
+<link rel="stylesheet" href="rewair.css">
+</head>
+<body>
+
+<div id="app"></div>
+
+<!-- API provider: production fetch/EventSource adapter exposing window.RewairAPI -->
+<script src="rw-api.js"></script>
+
+<!-- Preact runtime (vendored into flash for production) -->
+<script src="vendor/preact.umd.js"></script>
+<script src="vendor/preact-hooks.umd.js"></script>
+<script src="vendor/htm.umd.js"></script>
+
+<!-- app components (load order matters: lib seeds window.RW) -->
+<script src="rw-lib.js"></script>
+<script src="rw-widgets.js"></script>
+<script src="rw-network.js"></script>
+<script src="rw-system.js"></script>
+<script src="rw-settings.js"></script>
+<script src="rw-app.js"></script>
+
+</body>
+</html>

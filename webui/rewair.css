@@ -1,0 +1,377 @@
+/* ============================================================
+   Rewair web UI — stylesheet
+   Tokens + components + 3 visual directions (body[data-variant])
+   Light/dark via :root[data-dark="1"] (set by JS: auto/manual)
+   ============================================================ */
+
+:root {
+  --bg:     oklch(0.982 0.004 95);
+  --card:   #ffffff;
+  --ink:    oklch(0.26 0.012 95);
+  --muted:  oklch(0.56 0.012 95);
+  --faint:  oklch(0.72 0.008 95);
+  --line:   oklch(0.912 0.006 95);
+  --green:  oklch(0.64 0.14 152);
+  --amber:  oklch(0.68 0.14 70);
+  --purple: oklch(0.56 0.14 300);
+  --led:    oklch(0.92 0.02 85);
+  --led-bg: #131313;
+}
+:root[data-dark="1"] {
+  --bg:     oklch(0.175 0.006 95);
+  --card:   oklch(0.225 0.007 95);
+  --ink:    oklch(0.93 0.005 95);
+  --muted:  oklch(0.64 0.01 95);
+  --faint:  oklch(0.48 0.008 95);
+  --line:   oklch(0.30 0.008 95);
+  --green:  oklch(0.72 0.13 152);
+  --amber:  oklch(0.75 0.13 70);
+  --purple: oklch(0.68 0.13 300);
+  --led-bg: #0a0a0a;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--card);
+  color: var(--ink);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+.wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 48px 16px; }
+
+/* ---------- top bar ---------- */
+.topbar {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 2px 18px 2px;
+}
+.topbar h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+.topbar .brand { font-size: 12px; color: var(--faint); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+.topbar .spacer { flex: 1; }
+.wifi-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12.5px; color: var(--muted);
+}
+.wifi-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+.wifi-chip .dot.ap { background: var(--amber); }
+.chip-warn {
+  width: 15px; height: 15px; border-radius: 50%;
+  background: var(--amber); color: var(--card);
+  font-size: 10.5px; font-weight: 750; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: default;
+}
+
+/* tiny CSS tooltip */
+[data-tip] { position: relative; }
+[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute; top: calc(100% + 7px); right: -4px;
+  background: var(--ink); color: var(--bg);
+  font-size: 11.5px; font-weight: 500; line-height: 1.3;
+  padding: 6px 10px; border-radius: 8px; white-space: nowrap;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.25); z-index: 40;
+  pointer-events: none;
+}
+
+/* ---------- airy: no card chrome. Hairlines delimit LIST ROWS only;
+   sections are separated by whitespace + uppercase labels. ---------- */
+.card { padding: 0; }
+section { padding: 0; }
+section[data-screen-label="Sensors"] { margin-top: 14px; }
+.sec-label {
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--faint); margin: 30px 2px 12px 2px;
+}
+
+/* ---------- score hero ---------- */
+.score-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 2px; }
+.score-left { display: flex; flex-direction: column; gap: 2px; }
+.score-cap { font-size: 12px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.score-cap .sdot { width: 9px; height: 9px; border-radius: 50%; flex: none; transition: background 0.4s ease; }
+.score-num-row { display: flex; align-items: baseline; gap: 6px; }
+.score-num { font-size: 84px; font-weight: 180; letter-spacing: -0.03em; line-height: 1.05; }
+.score-denom { font-size: 15px; color: var(--faint); font-weight: 500; }
+.score-word { font-size: 13px; color: var(--muted); }
+
+.bars { display: grid; grid-template-columns: repeat(5, 22px); gap: 8px; align-items: end; justify-items: center; }
+.bar-col { display: flex; flex-direction: column; align-items: center; gap: 11px; width: 100%; }
+.bar-track {
+  width: 6px; height: 64px; border-radius: 99px;
+  background: color-mix(in oklab, var(--ink) 8%, transparent);
+  display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden;
+}
+.bar-fill { width: 100%; border-radius: 99px; min-height: 12%; transition: height 0.55s cubic-bezier(0.4, 0, 0.1, 1), background 0.55s ease; }
+.bar-lab { font-size: 9.5px; color: var(--faint); font-weight: 600; letter-spacing: 0.04em; }
+
+.c-green  { background: var(--green); }
+.c-amber  { background: var(--amber); }
+.c-purple { background: var(--purple); }
+.t-green  { color: var(--green); }
+.t-amber  { color: var(--amber); }
+.t-purple { color: var(--purple); }
+
+/* ---------- sensor widgets ---------- */
+.grid-sensors { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.widget { padding: 14px 10px 10px 10px; display: flex; flex-direction: column; gap: 2px; }
+.w-top { display: flex; align-items: center; justify-content: space-between; }
+.w-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.w-dot { width: 8px; height: 8px; border-radius: 50%; transition: background 0.4s ease; }
+.w-aux-tag { font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em; color: var(--faint); border: 1px solid var(--line); border-radius: 99px; padding: 1px 7px; }
+.w-val-row { display: flex; align-items: baseline; gap: 4px; margin-top: 4px; }
+.w-val { font-size: 27px; font-weight: 450; letter-spacing: -0.02em; }
+.w-unit { font-size: 12.5px; color: var(--muted); }
+.widget.aux .w-val { color: var(--muted); font-weight: 350; }
+.spark { display: block; width: 100%; height: 26px; margin-top: 6px; }
+.spark polyline { fill: none; stroke: color-mix(in oklab, var(--muted) 55%, transparent); stroke-width: 1.5; stroke-linejoin: round; stroke-linecap: round; }
+.spark circle { fill: var(--muted); }
+
+/* ---------- display mode cards ---------- */
+.grid-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.mode-card {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 14px 10px 12px 10px; cursor: pointer;
+  border: 0; border-radius: 12px;
+  background: transparent;
+  transition: background 0.15s ease, outline-color 0.2s ease;
+  font: inherit; color: inherit;
+  outline-offset: -1px;
+}
+.mode-card:hover { background: color-mix(in oklab, var(--ink) 4%, transparent); }
+.mode-card[aria-pressed="true"] { outline: 1.5px solid var(--ink); }
+.matrix { background: var(--led-bg); border-radius: 9px; padding: 9px 12px; display: flex; align-items: center; justify-content: center; }
+.matrix canvas { display: block; image-rendering: pixelated; }
+.mode-name { font-size: 12.5px; font-weight: 550; color: var(--muted); }
+.mode-card[aria-pressed="true"] .mode-name { color: var(--ink); }
+
+/* ---------- wifi ---------- */
+.wifi-row { display: flex; align-items: center; gap: 14px; }
+.wifi-sig { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; min-width: 44px; }
+.rssi-small { font-size: 11px; font-weight: 600; color: var(--muted); }
+.rbars { display: flex; align-items: flex-end; gap: 2.5px; height: 18px; flex: none; }
+.rbars span { width: 4px; border-radius: 2px; background: color-mix(in oklab, var(--ink) 12%, transparent); }
+.rbars span:nth-child(1) { height: 6px; }
+.rbars span:nth-child(2) { height: 10px; }
+.rbars span:nth-child(3) { height: 14px; }
+.rbars span:nth-child(4) { height: 18px; }
+.rbars.q-good span.on { background: var(--green); }
+.rbars.q-ok   span.on { background: var(--amber); }
+.rbars.q-bad  span.on { background: var(--purple); }
+.wifi-main { flex: 1; min-width: 0; }
+.wifi-ssid { font-size: 16px; font-weight: 600; }
+.wifi-sub { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+
+.ap-state { display: flex; align-items: center; gap: 14px; }
+.ap-icon { width: 36px; height: 36px; border-radius: 50%; background: color-mix(in oklab, var(--amber) 16%, transparent); display: flex; align-items: center; justify-content: center; flex: none; }
+.ap-icon .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--amber); }
+
+/* ---------- buttons / inputs / segmented ---------- */
+.btn {
+  font: inherit; font-size: 13.5px; font-weight: 550; color: var(--ink);
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 14px; cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.btn:hover { border-color: color-mix(in oklab, var(--ink) 35%, var(--line)); }
+.btn:active { background: color-mix(in oklab, var(--ink) 6%, var(--card)); }
+.btn.primary { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn.primary:hover { background: color-mix(in oklab, var(--ink) 85%, var(--bg)); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.seg { display: inline-flex; background: color-mix(in oklab, var(--ink) 7%, transparent); border-radius: 10px; padding: 2.5px; gap: 2px; }
+.seg button {
+  font: inherit; font-size: 12.5px; font-weight: 550; color: var(--muted);
+  border: 0; background: transparent; border-radius: 8px; padding: 5px 13px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.seg button[aria-pressed="true"] { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); }
+
+.field {
+  font: inherit; font-size: 14px; color: var(--ink);
+  background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 12px; width: 100%;
+}
+.field:focus { outline: 2px solid color-mix(in oklab, var(--ink) 50%, transparent); outline-offset: -1px; }
+select.field { width: auto; padding: 7px 10px; }
+
+/* ---------- settings ----------
+   direct model: the control IS the value — always live, instant
+   apply. rows model (comparison): value right + chevron + inline
+   editor. Sub line = status only, never the value. */
+.set-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 16px; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.set-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.set-row:first-child { padding-top: 0; }
+.set-left { flex: 1 1 auto; min-width: 0; }
+.set-name { font-size: 14px; font-weight: 550; }
+.set-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.set-ctrl { display: flex; align-items: center; gap: 8px; flex: none; max-width: 100%; }
+.set-val { font-size: 15px; font-weight: 600; }
+
+/* affordance: whole row clickable, chevron at right */
+.set-row.rowable { cursor: pointer; outline-offset: -2px; }
+.set-row.rowable:hover { background: color-mix(in oklab, var(--ink) 4%, transparent); border-radius: 8px; }
+.set-chev { color: var(--faint); font-size: 17px; font-weight: 500; line-height: 1; transition: transform 0.18s ease, color 0.15s ease; }
+.set-row.rowable:hover .set-chev { color: var(--muted); }
+.set-row.open .set-chev { transform: rotate(90deg); }
+
+/* quiet inline field: reads as the value, edits in place */
+.field.quiet { background: transparent; border-color: transparent; font-size: 15px; font-weight: 600; text-align: right; width: 180px; padding: 6px 10px; transition: border-color 0.15s ease, background 0.15s ease; }
+.field.quiet:hover { border-color: var(--line); }
+.field.quiet:focus { background: var(--bg); border-color: var(--line); }
+
+/* quiet select: same treatment, custom chevron, native arrow hidden */
+.quiet-sel { position: relative; display: inline-flex; align-items: center; }
+select.field.quiet { appearance: none; -webkit-appearance: none; width: auto; max-width: 230px; padding: 6px 24px 6px 10px; cursor: pointer; }
+.quiet-sel-chev { position: absolute; right: 9px; pointer-events: none; color: var(--faint); font-size: 10.5px; line-height: 1; transition: color 0.15s ease; }
+.quiet-sel:hover .quiet-sel-chev { color: var(--muted); }
+
+/* surface: inline expansion under the row */
+.set-editor { flex-basis: 100%; cursor: default; display: flex; flex-direction: column; gap: 10px; padding: 4px 0 8px 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .set-editor { animation: set-exp 0.18s ease; }
+}
+@keyframes set-exp { from { opacity: 0; transform: translateY(-4px); } }
+
+/* editor internals (shared) */
+.set-ed-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.set-ed-hint { font-size: 12px; color: var(--muted); }
+.set-ed-or { font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--faint); }
+
+/* ---------- modal ---------- */
+.overlay {
+  position: fixed; inset: 0; background: rgb(0 0 0 / 0.42);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+  padding: 16px;
+}
+.overlay[hidden] { display: none; }
+.modal {
+  background: var(--card); border-radius: 16px; box-shadow: 0 18px 60px rgb(0 0 0 / 0.3);
+  width: min(420px, 100%); max-height: 82vh; display: flex; flex-direction: column;
+  border: 1px solid var(--line);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px 12px 18px; }
+.modal-head h2 { font-size: 16px; font-weight: 650; margin: 0; }
+.modal-x { background: none; border: 0; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 8px; border-radius: 8px; line-height: 1; }
+.modal-x:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); }
+.modal-body { padding: 0 18px 18px 18px; overflow-y: auto; }
+.net-list { display: flex; flex-direction: column; }
+.net-item {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  font: inherit; color: inherit; text-align: left;
+  background: none; border: 0; border-bottom: 1px solid var(--line);
+  padding: 12px 4px; cursor: pointer; border-radius: 6px;
+}
+.net-item:hover { background: color-mix(in oklab, var(--ink) 5%, transparent); }
+.net-item:last-child { border-bottom: 0; }
+.net-ssid { flex: 1; font-size: 14px; font-weight: 550; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-sec { font-size: 10px; font-weight: 600; letter-spacing: 0.05em; color: var(--faint); border: 1px solid var(--line); border-radius: 99px; padding: 1px 7px; flex: none; }
+.modal-status { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 28px 0; color: var(--muted); font-size: 13.5px; }
+.spinner {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2.5px solid color-mix(in oklab, var(--ink) 15%, transparent);
+  border-top-color: var(--ink);
+  animation: rwspin 0.8s linear infinite;
+}
+@keyframes rwspin { to { transform: rotate(360deg); } }
+.join-form { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 4px 0; }
+.join-ssid { font-size: 14px; font-weight: 600; }
+.join-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.modal-err { color: var(--purple); font-size: 13px; }
+.big-ok { width: 38px; height: 38px; border-radius: 50%; background: color-mix(in oklab, var(--green) 18%, transparent); color: var(--green); display: flex; align-items: center; justify-content: center; font-size: 19px; font-weight: 700; }
+
+/* key/value list (network details) */
+.kv-list { display: flex; flex-direction: column; padding-bottom: 4px; }
+.kv-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.kv-row:last-child { border-bottom: 0; }
+.kv-key { font-size: 13px; color: var(--muted); }
+.kv-val { font-size: 13.5px; font-weight: 600; }
+
+/* ---------- section label with action ---------- */
+.sec-label-row { display: flex; align-items: center; justify-content: space-between; }
+.sec-act {
+  font: inherit; font-size: 12.5px; font-weight: 550; letter-spacing: 0; text-transform: none;
+  color: var(--muted); background: none; border: 0; cursor: pointer; padding: 0;
+}
+.sec-act:hover { color: var(--ink); }
+
+/* ---------- saved-networks manager ---------- */
+.grp { font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--faint); padding: 14px 2px 4px 2px; }
+#mgr-connected-grp .grp { padding-top: 4px; }
+.nrow { display: flex; align-items: center; gap: 11px; padding: 11px 2px; border-bottom: 1px solid var(--line); position: relative; }
+.nrow:last-child { border-bottom: 0; }
+.nrow .sig { flex: none; }
+.nrow .nmain { flex: 1; min-width: 0; }
+.nrow .nname { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 7px; min-width: 0; }
+.nrow .nname span.ssid-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nrow .nsub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.nrow.dim .nname, .nrow.dim .nsub { color: var(--faint); }
+.nrow.dragging { opacity: 0.5; }
+.nrow.drag-over { border-top: 2px solid var(--ink); }
+.badge { font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 7px; border-radius: 99px; flex: none; }
+.badge.on { color: var(--green); background: color-mix(in oklab, var(--green) 15%, transparent); }
+.badge.prio { color: var(--amber); background: color-mix(in oklab, var(--amber) 16%, transparent); }
+.drag-h { color: var(--faint); cursor: grab; font-size: 13px; flex: none; touch-action: none; user-select: none; padding: 0 1px; }
+.drag-h:active { cursor: grabbing; }
+.dragging-list .nrow { transition: transform 0.12s ease; border-bottom-color: transparent; }
+.nrow.dragging {
+  background: color-mix(in oklab, var(--ink) 7%, var(--card));
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.22); border-radius: 10px;
+  border-bottom-color: transparent; position: relative; z-index: 3;
+}
+.nrow.dragging .drag-h { color: var(--ink); cursor: grabbing; }
+.mgr-empty { padding: 26px 2px; text-align: center; font-size: 13.5px; color: var(--muted); }
+.kebab { flex: none; background: none; border: 0; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; padding: 4px 7px; border-radius: 8px; letter-spacing: 1px; }
+.kebab:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); }
+.pop {
+  position: absolute; right: 6px; top: calc(100% - 6px);
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 10px 34px rgb(0 0 0 / 0.22); padding: 5px; width: 176px; z-index: 6;
+}
+.pop.up { top: auto; bottom: calc(100% - 6px); }
+.pop button { display: flex; width: 100%; align-items: center; gap: 9px; font: inherit; font-size: 13px; color: var(--ink); background: none; border: 0; text-align: left; padding: 8px 9px; border-radius: 8px; cursor: pointer; }
+.pop button:hover { background: color-mix(in oklab, var(--ink) 6%, transparent); }
+.pop button.warn { color: var(--purple); }
+.pop .sep { height: 1px; background: var(--line); margin: 4px 2px; }
+.add-row { display: flex; align-items: center; gap: 11px; width: 100%; font: inherit; font-size: 14px; font-weight: 600; color: var(--ink); background: none; border: 0; padding: 14px 2px 6px 2px; cursor: pointer; }
+.add-row .plus { width: 26px; height: 26px; border-radius: 50%; border: 1.5px dashed var(--line); display: flex; align-items: center; justify-content: center; font-size: 15px; color: var(--muted); flex: none; }
+.add-row:hover .plus { border-color: var(--muted); color: var(--ink); }
+
+/* ---------- firmware update + reset ---------- */
+.btn.danger { background: var(--purple); color: var(--bg); border-color: var(--purple); }
+.btn.danger:hover { background: color-mix(in oklab, var(--purple) 88%, var(--bg)); border-color: var(--purple); }
+.fw-drop {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  border: 1.5px dashed var(--line); border-radius: 14px; padding: 26px 16px;
+  cursor: pointer; text-align: center; transition: border-color 0.15s ease, background 0.15s ease;
+}
+.fw-drop:hover { border-color: var(--muted); background: color-mix(in oklab, var(--ink) 3%, transparent); }
+.fw-drop-ic { font-size: 24px; color: var(--muted); line-height: 1; margin-bottom: 4px; }
+.fw-drop-main { font-size: 14px; font-weight: 600; word-break: break-all; }
+.fw-drop-sub { font-size: 12px; color: var(--muted); }
+.fw-current { font-size: 12.5px; color: var(--muted); text-align: center; margin: 14px 0 16px; }
+.fw-current strong { color: var(--ink); font-weight: 600; }
+.fw-flash { padding: 12px 0 6px; }
+.fw-pct { font-size: 40px; font-weight: 250; letter-spacing: -0.02em; text-align: center; margin-bottom: 14px; }
+.fw-pct span { font-size: 18px; color: var(--muted); margin-left: 2px; }
+.progress { height: 8px; border-radius: 99px; background: color-mix(in oklab, var(--ink) 10%, transparent); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 99px; background: var(--green); transition: width 0.25s ease; }
+.fw-note { font-size: 12.5px; line-height: 1.5; color: var(--muted); text-align: center; margin-top: 16px; }
+.reset-warn { font-size: 13.5px; line-height: 1.55; color: var(--muted); margin: 2px 0 18px; }
+
+/* ---------- footer ---------- */
+.foot { margin-top: 28px; text-align: center; font-size: 11.5px; color: var(--faint); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 560px) {
+  .score-hero { flex-direction: column; align-items: center; gap: 18px; }
+  .score-left { align-items: center; }
+  .bars { grid-template-columns: repeat(5, 22px); justify-content: center; }
+  .grid-modes { gap: 8px; }
+  .mode-card { padding: 12px 6px 10px 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation-duration: 0.01s !important; }
+}
