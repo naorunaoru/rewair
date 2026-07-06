@@ -19,6 +19,7 @@
 #include "rewair_state.h"
 #include "rewair_tz.h"
 #include "rewair_settings.h"
+#include "web_api.h"
 
 #define SENSOR_PAYLOAD_MAX 512u
 #define SENSOR_RX_BUFFER_SIZE 1024u
@@ -123,6 +124,9 @@ static uint32_t sensor_raw_trace_reported = 0u;
 static volatile uint32_t console_scan_count = 0u;
 static uint32_t console_scan_cache_count = 0u;
 static wiced_scan_result_t console_scan_cache[CONSOLE_SCAN_CACHE_MAX];
+static wiced_semaphore_t scan_done_semaphore;
+static uint32_t scan_semaphore_inited = 0u;
+static volatile uint32_t scan_in_progress = 0u;
 static volatile uint32_t wifi_join_in_progress = 0u;
 static volatile uint32_t wifi_time_synced = 0u;
 static volatile uint32_t wifi_last_ntp_sync_ms = 0u;
@@ -444,7 +448,7 @@ static int ssid_eq_text( const wiced_ssid_t* ssid, const char* text )
     return memcmp( ssid->value, text, length ) == 0;
 }
 
-static const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text )
+const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text )
 {
     const wiced_scan_result_t* best = NULL;
     uint32_t i;
@@ -466,7 +470,7 @@ static const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ss
     return best;
 }
 
-static const wiced_scan_result_t* find_scan_result_index( uint32_t index )
+const wiced_scan_result_t* console_scan_cache_get( uint32_t index )
 {
     if ( index >= console_scan_cache_count )
     {
@@ -543,6 +547,12 @@ static wiced_result_t console_scan_result_handler( wiced_scan_handler_result_t* 
         else
         {
             printf( "[scan] complete results=%lu\n", (unsigned long)console_scan_count );
+
+            if ( scan_in_progress != 0u )
+            {
+                scan_in_progress = 0u;
+                wiced_rtos_set_semaphore( &scan_done_semaphore );
+            }
         }
 
         free( malloced_scan_result );
@@ -566,6 +576,26 @@ static void wifi_scan_start( void )
     }
 }
 
+uint32_t sensor_scan_blocking( void )
+{
+    if ( scan_semaphore_inited == 0u )
+    {
+        wiced_rtos_init_semaphore( &scan_done_semaphore );
+        scan_semaphore_inited = 1u;
+    }
+    console_scan_count = 0u;
+    console_scan_cache_count = 0u;
+    memset( console_scan_cache, 0, sizeof( console_scan_cache ) );
+    scan_in_progress = 1u;
+    if ( wiced_wifi_scan_networks( console_scan_result_handler, NULL ) != WICED_SUCCESS )
+    {
+        scan_in_progress = 0u;
+        return 0u;
+    }
+    wiced_rtos_get_semaphore( &scan_done_semaphore, 6000u );
+    return console_scan_cache_count;
+}
+
 static int wifi_dct_has_stored_ap( void )
 {
     wiced_config_ap_entry_t* ap = NULL;
@@ -583,7 +613,7 @@ static int wifi_dct_has_stored_ap( void )
     return present;
 }
 
-static uint32_t wifi_dct_saved_count( void )
+uint32_t wifi_dct_saved_count( void )
 {
     platform_dct_wifi_config_t* wifi_config = NULL;
     uint32_t count = 0u;
@@ -829,7 +859,7 @@ static void wifi_join_test_index_command( const char* index_text, const char* pa
         return;
     }
 
-    scan = find_scan_result_index( index );
+    scan = console_scan_cache_get( index );
     if ( scan == NULL )
     {
         printf( "[wifi] no cached scan result %lu; run scan first\n", (unsigned long)index );
@@ -902,7 +932,7 @@ static void wifi_join_index_command( const char* index_text, const char* pass_te
         return;
     }
 
-    scan = find_scan_result_index( index );
+    scan = console_scan_cache_get( index );
     if ( scan == NULL )
     {
         printf( "[wifi] no cached scan result %lu; run scan first\n", (unsigned long)index );
@@ -1811,6 +1841,8 @@ static void network_after_ip_ready( void )
         rewair_state_set_wifi_sta( ssid_buf, rssi, ip_buf, gw_buf, dns_buf, mac_buf,
                                    wifi_dct_saved_count( ) );
     }
+
+    rewair_web_api_start( WICED_STA_INTERFACE );
 
     if ( wiced_time_get_time( &now_ms ) == WICED_SUCCESS )
     {
