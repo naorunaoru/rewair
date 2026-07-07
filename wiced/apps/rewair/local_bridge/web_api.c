@@ -8,6 +8,7 @@
 #include "rewair_json.h"
 #include "rewair_settings.h"
 #include "rewair_tz.h"
+#include "rewair_frames.h"
 #include "web_ui.h"
 
 #define API_BODY_MAX      1024u

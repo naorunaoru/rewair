@@ -31,13 +31,11 @@ int            wifi_list_get( uint32_t index, char ssid_out[33], wiced_security_
                               int* connected_out );
 wiced_result_t wifi_clear_stored_credentials( void );
 
-/* sensor/display + manual time control (Task 8) */
-wiced_result_t sensor_send_disp_mode( const char* mode );
-void           sensor_apply_manual_time( uint32_t epoch );
-
-/* time-zone rule application + time-context push (Task 6) */
-void sensor_set_tz_rule( const rewair_tz_rule_t* rule );
-void send_time_context( uint32_t utc_seconds );
+/* sensor/display + manual time control, time-zone rule application, and
+ * time-context push now declared in rewair_frames.h (Phase 2 Task 8,
+ * pure move out of local_bridge.c): sensor_send_disp_mode,
+ * sensor_apply_manual_time, sensor_set_tz_rule, send_time_context.
+ * web_api.c includes rewair_frames.h directly for these. */
 
 /* External SPI flash bring-up (Phase 2 Task 1). Both return 0 on success.
  * rewair_sflash_bounds_ok MUST be checked (addr, len) before read_bytes --
