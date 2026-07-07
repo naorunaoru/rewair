@@ -18,13 +18,20 @@
 #define AP_JOIN_ATTEMPTS_BEFORE_FALLBACK 3u
 #define AP_CHANNEL                       6u
 
-static rewair_net_mode_t   current_mode = NET_MODE_STA_JOINING;
+/* volatile: written only by the network thread (tick/enter/exit), but read
+ * cross-thread by HTTP workers via rewair_net_mode_current (Tasks 4/5). */
+static volatile rewair_net_mode_t current_mode = NET_MODE_STA_JOINING;
 static uint32_t            boot_join_failures = 0u;
 static volatile uint32_t   sta_requested = 0u;
 /* Owns the STA link-history bit moved verbatim out of local_bridge.c's
  * network_thread_main (was `static volatile uint32_t wifi_link_was_up`). */
 static volatile uint32_t   wifi_link_was_up = 0u;
 static dns_redirector_t    dns_redirector;
+/* Set only when wiced_dns_redirector_start succeeds. A failed start returns
+ * BEFORE the SDK creates dns_redirector.dns_thread (dns_redirect.c:170), so an
+ * unconditional stop would force-awake/join/delete an uninitialized (first
+ * cycle) or stale (later cycles) thread handle -- probable hard fault. */
+static uint8_t             dns_started = 0u;
 
 static const wiced_ip_setting_t ap_ip_settings =
 {
@@ -43,7 +50,10 @@ static void ap_ssid_build( char out[33] )
 {
     wiced_mac_t mac;
     memset( &mac, 0, sizeof( mac ) );
-    wiced_wifi_get_mac_address( &mac );
+    if ( wiced_wifi_get_mac_address( &mac ) != WICED_SUCCESS )
+    {
+        printf( "[net-mode] mac read failed\n" );
+    }
     snprintf( out, 33, "rewair-setup-%02x%02x", mac.octet[4], mac.octet[5] );
 }
 
@@ -131,7 +141,11 @@ wiced_result_t rewair_net_mode_enter_ap( rewair_net_mode_t which )
         }
     }
 
-    if ( wiced_dns_redirector_start( &dns_redirector, WICED_AP_INTERFACE ) != WICED_SUCCESS )
+    if ( wiced_dns_redirector_start( &dns_redirector, WICED_AP_INTERFACE ) == WICED_SUCCESS )
+    {
+        dns_started = 1u;
+    }
+    else
     {
         printf( "[net-mode] dns redirector failed; portal reachable by ip only\n" );
     }
@@ -157,7 +171,11 @@ wiced_result_t rewair_net_mode_enter_ap( rewair_net_mode_t which )
 
 wiced_result_t rewair_net_mode_exit_ap_to_sta( void )
 {
-    wiced_dns_redirector_stop( &dns_redirector );
+    if ( dns_started != 0u )
+    {
+        wiced_dns_redirector_stop( &dns_redirector );
+        dns_started = 0u;
+    }
     web_ui_set_captive( 0u );
     rewair_web_api_stop( );
     wiced_network_down( WICED_AP_INTERFACE );      /* SDK stops internal DHCP server */
