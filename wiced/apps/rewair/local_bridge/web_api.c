@@ -37,14 +37,30 @@ static void api_send( wiced_http_response_stream_t* stream, const char* status_l
     char header[224];
     int n;
 
-    n = snprintf( header, sizeof( header ),
-                  "%s\r\n"
-                  "Content-Type: %s\r\n"
-                  "Content-Length: %lu\r\n"
-                  API_CORS_HEADER
-                  "Cache-Control: no-store\r\n"
-                  "\r\n",
-                  status_line, content_type, (unsigned long)body_len );
+    if ( body_len == 0u )
+    {
+        /* Empty response (e.g. 204 No Content): emit NO Content-Type. Advertising
+         * "application/json" with a zero-length body makes strict clients try to
+         * parse nothing (fetch's r.json() throws on empty input). */
+        n = snprintf( header, sizeof( header ),
+                      "%s\r\n"
+                      "Content-Length: 0\r\n"
+                      API_CORS_HEADER
+                      "Cache-Control: no-store\r\n"
+                      "\r\n",
+                      status_line );
+    }
+    else
+    {
+        n = snprintf( header, sizeof( header ),
+                      "%s\r\n"
+                      "Content-Type: %s\r\n"
+                      "Content-Length: %lu\r\n"
+                      API_CORS_HEADER
+                      "Cache-Control: no-store\r\n"
+                      "\r\n",
+                      status_line, content_type, (unsigned long)body_len );
+    }
     if ( n < 0 || n >= (int)sizeof( header ) )
     {
         return;
@@ -70,30 +86,94 @@ static int method_is( const wiced_http_message_body_t* http_data, wiced_http_req
     return http_data != NULL && http_data->request_type == t;
 }
 
-/* ---- request body extraction ----
- * Bodies must arrive complete in the first packet (Global Constraints); this
- * rejects split bodies with 400 rather than trying to reassemble them. */
+/* ---- request body extraction ---- */
+/* Timeout (ms) to wait for continuation body segments after the header packet.
+ * Browsers send the body immediately after the headers, so the wait is short in
+ * practice; the cap only bounds a broken/malicious client that sends headers and
+ * then stalls (it would block the daemon's single worker thread until then). */
+#define API_BODY_RX_TIMEOUT_MS 1500u
+
+/* Reads the full POST body into `out` (NUL-terminated), returning its length or
+ * -1 (with an error response already sent).
+ *
+ * The WICED daemon only parses the packet containing the request headers, and
+ * exposes just the body bytes that happened to arrive in that same TCP segment
+ * (message_data_length), plus how many are still promised by Content-Length
+ * (total_message_data_remaining). Browsers routinely put the body in a SEPARATE
+ * segment from the headers, so the header packet often carries zero body bytes.
+ * We therefore pull the remainder straight off the socket here.
+ *
+ * Concurrency: url generators run on the daemon's single worker thread inside
+ * http_server_deferred_receive_callback, which is the only place that receives
+ * on this socket. So calling wiced_tcp_receive() here cannot race the daemon;
+ * any deferred-receive events it already queued for these packets will later
+ * fire, receive nothing (WICED_NO_WAIT), and no-op. */
 static int api_read_body( wiced_http_message_body_t* http_data, char* out, uint32_t out_size,
                           wiced_http_response_stream_t* stream )
 {
-    if ( http_data == NULL || http_data->data == NULL || http_data->message_data_length == 0u )
+    uint32_t have;
+    uint32_t total;
+    uint32_t got;
+
+    if ( http_data == NULL )
     {
         api_send_error( stream, HTTP_HEADER_400, "missing body" );
         return -1;
     }
-    if ( http_data->total_message_data_remaining != 0u )
+
+    have  = (uint32_t)http_data->message_data_length;
+    total = have + (uint32_t)http_data->total_message_data_remaining;
+
+    if ( total == 0u )
     {
-        api_send_error( stream, HTTP_HEADER_400, "body split across packets" );
+        api_send_error( stream, HTTP_HEADER_400, "missing body" );
         return -1;
     }
-    if ( http_data->message_data_length >= out_size )
+    if ( total >= out_size )
     {
         api_send_error( stream, "HTTP/1.1 413 Payload Too Large", "body too large" );
         return -1;
     }
-    memcpy( out, http_data->data, http_data->message_data_length );
-    out[http_data->message_data_length] = '\0';
-    return (int)http_data->message_data_length;
+
+    if ( have > 0u && http_data->data != NULL )
+    {
+        memcpy( out, http_data->data, have );
+    }
+    got = have;
+
+    while ( got < total )
+    {
+        wiced_packet_t* packet = NULL;
+        uint8_t*        packet_data;
+        uint16_t        fragment_length;
+        uint16_t        available_length;
+        uint32_t        copy_length;
+
+        if ( wiced_tcp_receive( stream->tcp_stream.socket, &packet, API_BODY_RX_TIMEOUT_MS ) != WICED_SUCCESS ||
+             packet == NULL )
+        {
+            api_send_error( stream, HTTP_HEADER_400, "incomplete body" );
+            return -1;
+        }
+        if ( wiced_packet_get_data( packet, 0, &packet_data, &fragment_length, &available_length ) != WICED_SUCCESS )
+        {
+            wiced_packet_delete( packet );
+            api_send_error( stream, HTTP_HEADER_400, "incomplete body" );
+            return -1;
+        }
+
+        copy_length = (uint32_t)fragment_length;
+        if ( got + copy_length > total )
+        {
+            copy_length = total - got;   /* never copy past the promised length */
+        }
+        memcpy( out + got, packet_data, copy_length );
+        got += copy_length;
+        wiced_packet_delete( packet );
+    }
+
+    out[total] = '\0';
+    return (int)total;
 }
 
 /* ---- connected_s: association-start-uptime -> duration ----
