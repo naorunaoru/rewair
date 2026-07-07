@@ -16,7 +16,11 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
   `rewair_console`, `rewair_score`, `rewair_walltime`, `rewair_fmt`
   (string/IP/MAC/SSID formatting), `rewair_json` (with vendored `jsmn.c`/`jsmn.h`),
   `rewair_drops`, `rewair_uifs` (RWFS reader for the external-sflash-hosted UI image),
-  and `web_api.c`/`web_ui.c` (HTTP routes and UI serving).
+  `rewair_net_mode` (pure-STA-or-pure-AP mode state machine: setup-AP bring-up
+  via the WICED internal DHCP server and `DNS_redirect` daemon, boot-autojoin
+  fallback, self-heal — see the README's [AP Setup
+  Mode](../../README.md#ap-setup-mode)), and `web_api.c`/`web_ui.c` (HTTP
+  routes, captive-portal redirect, and UI serving).
 - `wiced/platforms/AWAIR`: Awair/EMW3165 platform port and pin map used by the
   WICED SDK build, including the external SPI flash pin mapping (see
   [External SPI Flash](#external-spi-flash) below).

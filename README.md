@@ -29,6 +29,9 @@ What's inside of the Element?
   - `rewair_frames` / `rewair_frame_rx`: F103 UART frame encode/decode.
   - `rewair_wifi_dct`: WICED DCT-backed multi-network saved-AP list.
   - `rewair_wifi_scan` / `rewair_wifi_join`: Wi-Fi scan and join/connect flow.
+  - `rewair_net_mode`: pure-STA-or-pure-AP network mode state machine (setup
+    AP bring-up/teardown, boot-autojoin fallback, self-heal). See [AP Setup
+    Mode](#ap-setup-mode) below.
   - `rewair_console`: serial console command parser.
   - `rewair_score`: sensor-index-to-score math.
   - `rewair_walltime`: epoch/wall-clock helpers.
@@ -229,14 +232,16 @@ both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
 REWAIR_IP=<device-ip> scripts/api_smoke.zsh
 ```
 
-Runs 19 checks against a live device: web API status/scan/networks shape,
-POST route validation (400/405/501), SSE, and the web UI being served from
-sflash (`/`, `/app.js`, gzip headers, 404 on unknown paths).
+Runs 20 checks against a live device: web API status/scan/networks shape,
+POST route validation (400/405/501), SSE, split-packet POST body handling,
+and the web UI being served from sflash (`/`, `/app.js`, gzip headers, 404
+on unknown paths).
 
-Known flake: on the very first smoke run right after a boot, the Wi-Fi scan
-check occasionally fails (roughly 1 run in 7) while the radio is still
-settling. Rerun once if only that check fails; a fresh boot needs a moment
-before scan results are reliable.
+Known flake: the split-packet POST-body check (`scripts/check_post_body.py`)
+occasionally fails (roughly 1 run in 7) when it runs immediately after the
+SSE check — a first-run-after-boot timing bias, not a regression. Rerun the
+smoke script once, or run `scripts/check_post_body.py` standalone, if only
+that check fails.
 
 ## Web API Summary
 
@@ -250,16 +255,56 @@ requests CORS-"simple") in addition to `application/json`.
 | `/api/scan` | GET | Trigger/read a Wi-Fi scan, returns an array of nearby APs. |
 | `/api/networks` | GET | List saved Wi-Fi networks (DCT-backed). |
 | `/api/events` | GET | Server-Sent Events stream of the same status snapshot, pushed on change or every 15s. |
-| `/api/join` | POST | Join a Wi-Fi network (and save credentials). |
+| `/api/join` | POST | Join a Wi-Fi network (and save credentials). In AP setup mode (see [AP Setup Mode](#ap-setup-mode)), stores credentials only (no live join probe) and triggers an async switch to STA. |
 | `/api/forget` | POST | Remove a saved network. |
 | `/api/priority` | POST | Reorder saved-network join priority. |
 | `/api/settings` | POST | Update user settings (name, units, timezone, display mode). |
 | `/api/time` | POST | Set/override the device's wall-clock time. |
 | `/api/disp` | POST | Set the F103 display mode. |
 | `/api/update` | POST | Firmware OTA — not implemented, returns 501. |
-| `/api/reset` | POST | Clear saved Wi-Fi credentials and settings, then reboot. |
+| `/api/reset` | POST | Clear saved Wi-Fi credentials and settings, then reboot — back into AP setup mode if no credentials remain. |
 | `/api/debug/sflash` | GET | Debug route (compiled under `REWAIR_API_CORS_DEV`, currently enabled by default — see `web_api.h`) raw SPI-flash readback for debugging. |
 | `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image in external flash (or a small built-in fallback page for `/` if no image is flashed yet). |
+
+## AP Setup Mode
+
+The device is always in exactly one radio role — joined to a home network as
+a station (STA), or hosting its own setup access point (AP) — never both at
+once. `rewair_net_mode`
+(`wiced/apps/rewair/local_bridge/rewair_net_mode.c`) owns the transitions:
+
+- No stored Wi-Fi network at all: boot straight into the setup AP, no STA
+  join attempted.
+- Stored network(s) exist, but boot-time autojoin fails 3 consecutive
+  attempts: fall back to the setup AP. A steady-state STA drop (link lost
+  after having been up) does not count toward this and keeps retrying
+  autojoin indefinitely instead of falling back.
+
+The setup AP is an open network named `rewair-setup-<xxxx>`, where `<xxxx>`
+is the last two bytes of the device's Wi-Fi MAC in lowercase hex (e.g.
+`rewair-setup-30f4`), on channel 6, served at `192.168.0.1/24` via the WICED
+internal DHCP server. While it is up, any HTTP request whose path isn't
+exactly `/`, `/app.js`, or `/rewair.css` gets a DNS redirect (WICED's
+`DNS_redirect` daemon) plus a `302` to `/`, so phones/laptops pop the
+captive-portal sign-in page automatically. STA-mode HTTP behavior is
+unchanged (no redirect, plain 404 for unknown paths).
+
+Posting to `/api/join` while in setup/fallback AP mode stores the given
+SSID/password only — security and channel are resolved from the `/api/scan`
+result cache, not a live join probe — flushes an immediate success response,
+then asynchronously switches to STA on the network thread's next tick
+(within ~1 s). `POST /api/reset` clears saved credentials/settings and
+reboots back into the setup AP, from either mode.
+
+The fallback AP self-heals: every ~5 minutes it retries STA autojoin from
+the saved credentials, unless a client is currently associated to the setup
+AP (deferred so an in-progress phone/laptop configuration session isn't torn
+down mid-flow).
+
+The web API/UI status contract reflects AP mode already: `/api/status`'s
+`wifi` object reports `"mode":"ap"` plus `ap_ssid`, `ap_ip`, and
+`saved_count` (vs. `"mode":"sta"` plus `ssid`/`rssi`/`ip`/`gw`/`dns` when
+joined).
 
 ## Current State
 
