@@ -11,6 +11,7 @@
 #define REWAIR_API_CORS_DEV 1   /* ON during phase 1 bring-up; turn off for release */
 
 wiced_result_t rewair_web_api_start( wiced_interface_t interface );
+wiced_result_t rewair_web_api_stop( void );
 
 /* Force-closes the TCP connection backing `stream`. Used by web_ui.c when a
  * response's framing is already unrecoverable (e.g. Content-Length was sent

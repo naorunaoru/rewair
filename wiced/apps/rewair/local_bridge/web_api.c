@@ -24,6 +24,7 @@
 
 static wiced_http_server_t http_server;
 static uint32_t            server_started = 0u;
+static uint8_t             server_init_done = 0u;
 
 #ifdef REWAIR_API_CORS_DEV
 #define API_CORS_HEADER "Access-Control-Allow-Origin: *\r\n"
@@ -1245,13 +1246,16 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
         return WICED_SUCCESS;
     }
 
-    web_ui_init( );
-
-    wiced_rtos_init_mutex( &sse_mutex );
-    wiced_rtos_init_semaphore( &sse_wake );
-    rewair_state_subscribe( sse_on_state_change );
-    wiced_rtos_create_thread( &sse_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "sse",
-                              sse_thread_main, SSE_THREAD_STACK, NULL );
+    if ( server_init_done == 0u )
+    {
+        web_ui_init( );
+        wiced_rtos_init_mutex( &sse_mutex );
+        wiced_rtos_init_semaphore( &sse_wake );
+        rewair_state_subscribe( sse_on_state_change );
+        wiced_rtos_create_thread( &sse_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "sse",
+                                  sse_thread_main, SSE_THREAD_STACK, NULL );
+        server_init_done = 1u;
+    }
 
     result = wiced_http_server_start( &http_server, 80u, 4u, api_pages, interface,
                                       API_WORKER_STACK );
@@ -1265,4 +1269,25 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
         printf( "[web] http server start FAILED result=%d\n", (int)result );
     }
     return result;
+}
+
+wiced_result_t rewair_web_api_stop( void )
+{
+    uint32_t i;
+
+    if ( server_started == 0u )
+    {
+        return WICED_SUCCESS;
+    }
+
+    wiced_rtos_lock_mutex( &sse_mutex );
+    for ( i = 0u; i < SSE_MAX_SUBS; i++ )
+    {
+        sse_subs[i] = NULL;   /* sockets are owned by the daemon; stop() closes them */
+    }
+    wiced_rtos_unlock_mutex( &sse_mutex );
+
+    server_started = 0u;
+    printf( "[web] http server stopping\n" );
+    return wiced_http_server_stop( &http_server );
 }
