@@ -29,6 +29,7 @@
 #include "rewair_wifi_join.h"
 #include "rewair_console.h"
 #include "web_api.h"
+#include "rewair_net_mode.h"
 #include "spi_flash.h"
 #include "spi_flash_internal.h" /* device_id_t + sflash_read_ID (on GLOBAL_INCLUDES via drivers/spi_flash component) */
 
@@ -120,8 +121,10 @@ static uint32_t sensor_raw_trace_reported = 0u;
  * (Phase 2 Task 10, pure move; all still static there -- every outside
  * reader goes through the accessors in rewair_wifi_scan.h).
  * wifi_join_in_progress now lives in rewair_wifi_join.c (volatile
- * preserved), declared extern in rewair_wifi_join.h because
- * network_thread_main below reads it directly.
+ * preserved), declared extern in rewair_wifi_join.h; the STA autojoin arm
+ * that reads it moved into rewair_net_mode.c's tick (Phase 3 Task 3).
+ * wifi_link_was_up also moved there (it was only read/written by the STA
+ * autojoin bookkeeping, now the tick's STA arm).
  * wifi_time_synced and wifi_last_ntp_sync_ms: owned by local_bridge.c
  * (primary writers: network_after_ip_ready / network_sync_time_once,
  * both stay here), but the console "forget"/"down" commands
@@ -132,7 +135,6 @@ static uint32_t sensor_raw_trace_reported = 0u;
 volatile uint32_t wifi_time_synced = 0u;
 volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
-static volatile uint32_t wifi_link_was_up = 0u;
 
 /* current_tz_rule, current_tz_rule_valid, and sensor_set_tz_rule() now live
  * in rewair_frames.c (Phase 2 Task 8, primary writer: sensor_set_tz_rule);
@@ -937,49 +939,19 @@ static void sensor_reset_release_early( void )
     GPIOB->PUPDR &= ~( 3u << 24 );
 }
 
+/* Network thread: keeps its 60 s cadence but delegates all mode/link logic to
+ * rewair_net_mode_tick() (Phase 3 Task 3). The old STA autojoin body is now the
+ * STA arm of that tick; AP bring-up/teardown is the AP arm. Single-writer: every
+ * mode change happens on this thread. */
 static void network_thread_main( uint32_t arg )
 {
-    wiced_result_t result;
-
     (void)arg;
 
     wiced_rtos_delay_milliseconds( 1000u );
 
     while ( 1 )
     {
-        if ( wifi_join_in_progress == 0u )
-        {
-            if ( wiced_network_is_up( WICED_STA_INTERFACE ) == WICED_TRUE )
-            {
-                wifi_link_was_up = 1u;
-                network_after_ip_ready( );
-            }
-            else if ( wifi_dct_has_stored_ap( ) != 0 )
-            {
-                if ( wifi_link_was_up != 0u )
-                {
-                    printf( "[wifi] link dropped; will rejoin from DCT\n" );
-                    rewair_state_wifi_drop( );
-                    wifi_link_was_up = 0u;
-                }
-                printf( "[wifi] autojoin from DCT\n" );
-                result = wiced_network_up( WICED_STA_INTERFACE, WICED_USE_EXTERNAL_DHCP_SERVER, NULL );
-                if ( result == WICED_SUCCESS )
-                {
-                    printf( "[wifi] autojoin ready\n" );
-                    wifi_print_status( );
-                    wifi_link_was_up = 1u;
-                    network_after_ip_ready( );
-                }
-                else
-                {
-                    printf( "[wifi] autojoin failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
-                    wiced_network_down( WICED_STA_INTERFACE );
-                    wiced_leave_ap( WICED_STA_INTERFACE );
-                }
-            }
-        }
-
+        rewair_net_mode_tick( );
         wiced_rtos_delay_milliseconds( NETWORK_RETRY_MS );
     }
 }
