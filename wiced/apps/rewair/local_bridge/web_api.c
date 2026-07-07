@@ -8,6 +8,7 @@
 #include "rewair_json.h"
 #include "rewair_settings.h"
 #include "rewair_tz.h"
+#include "web_ui.h"
 
 #define API_BODY_MAX      1024u
 #define API_STATUS_BUF    1024u
@@ -1125,6 +1126,22 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_update_handler, NULL } },
     { "/api/reset",     "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_reset_handler, NULL } },
+    /* ---- Web UI (Phase 2 Task 5), served from the RWFS image in external
+     * sflash by web_ui.c. IMPORTANT: the WICED daemon matches
+     * WICED_RAW_DYNAMIC_URL_CONTENT entries by strncasecmp() against the
+     * request URL truncated to strlen(entry.url) -- i.e. a PREFIX match --
+     * and stops at the first match in table order. "/" is a prefix of every
+     * URL (including every "/api/..." route above), so its entry MUST be the
+     * LAST one in this table or it would swallow all the API routes.
+     * "/app.js" and "/rewair.css" are not prefixes of anything else here, so
+     * their position relative to "/api/..." doesn't matter, but they must
+     * still come before "/". */
+    { "/app.js",        "application/javascript", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { web_ui_appjs_handler, NULL } },
+    { "/rewair.css",    "text/css", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { web_ui_css_handler, NULL } },
+    { "/",              "text/html", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { web_ui_root_handler, NULL } },
 END_OF_HTTP_PAGE_DATABASE( );
 
 wiced_result_t rewair_web_api_start( wiced_interface_t interface )
@@ -1135,6 +1152,8 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
     {
         return WICED_SUCCESS;
     }
+
+    web_ui_init( );
 
     wiced_rtos_init_mutex( &sse_mutex );
     wiced_rtos_init_semaphore( &sse_wake );

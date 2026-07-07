@@ -40,3 +40,9 @@ void send_time_context( uint32_t utc_seconds );
 int rewair_sflash_read_id( uint8_t out_id[3] );
 int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size );
 int rewair_sflash_bounds_ok( uint32_t addr, uint32_t len );
+
+/* Lazily initializes the sflash driver handle (idempotent, mutex-guarded).
+ * Both rewair_sflash_read_id/read_bytes already call this internally, but
+ * web_ui.c calls it explicitly up front so it can log a clear failure before
+ * attempting rewair_uifs_init (Phase 2 Task 5). Returns 0 on success. */
+int rewair_sflash_ensure_init( void );

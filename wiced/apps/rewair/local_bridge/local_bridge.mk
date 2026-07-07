@@ -6,8 +6,10 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_tz.c \
                    rewair_settings.c \
                    rewair_json.c \
+                   rewair_uifs.c \
                    jsmn.c \
                    web_api.c \
+                   web_ui.c \
                    ../../../libraries/protocols/SNTP/sntp.c
 
 $(NAME)_INCLUDES := ../../../libraries/protocols/SNTP

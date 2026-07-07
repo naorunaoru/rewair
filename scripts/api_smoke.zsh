@@ -35,4 +35,14 @@ check "status rejects POST (405)"   sh -c "[ \"\$(curl -s -o /dev/null -w '%{htt
 
 check "sse first event < 3s"        sh -c "curl -sN --max-time 3 '$BASE/api/events' | head -1 | grep -q '^data: {'"
 
+# Web UI (Phase 2 Task 5): served from the RWFS image in external sflash.
+check "GET / is 200"                sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE/')\" = 200 ]"
+# -I sends a HEAD request; the UI routes only serve GET (HEAD 404s), so
+# capture headers off a real GET instead (-D - dumps headers, -o discards
+# the body) rather than using curl -I here.
+check "GET / has Content-Encoding gzip" sh -c "curl -s -D - -o /dev/null '$BASE/' | grep -qi '^Content-Encoding: *gzip'"
+check "GET / has Content-Length"    sh -c "curl -s -D - -o /dev/null '$BASE/' | grep -qi '^Content-Length: *[0-9]'"
+check "GET /app.js is 200"          sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE/app.js')\" = 200 ]"
+check "GET /nope.js is 404"         sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE/nope.js')\" = 404 ]"
+
 exit $fail
