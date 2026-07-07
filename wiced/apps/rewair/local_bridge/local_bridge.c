@@ -27,6 +27,7 @@
 #include "rewair_wifi_dct.h"
 #include "rewair_wifi_scan.h"
 #include "rewair_wifi_join.h"
+#include "rewair_console.h"
 #include "web_api.h"
 #include "spi_flash.h"
 #include "spi_flash_internal.h" /* device_id_t + sflash_read_ID (on GLOBAL_INCLUDES via drivers/spi_flash component) */
@@ -35,8 +36,8 @@
 #define SENSOR_THREAD_STACK_SIZE 4096u
 #define CONSOLE_THREAD_STACK_SIZE 4096u
 #define NETWORK_THREAD_STACK_SIZE 6144u
-#define CONSOLE_LINE_MAX 160u
-#define CONSOLE_ARG_MAX 32
+/* CONSOLE_LINE_MAX, CONSOLE_ARG_MAX moved to rewair_console.c (Phase 2
+ * Task 11, pure move) -- only the console tokenizer/dispatcher used them. */
 #define SENSOR_DIAG_REPEAT_MS 1000u
 #define SENSOR_STAT_REPEAT_MS 10000u
 #define SENSOR_NUDGE_START_MS 5000u
@@ -120,9 +121,16 @@ static uint32_t sensor_raw_trace_reported = 0u;
  * reader goes through the accessors in rewair_wifi_scan.h).
  * wifi_join_in_progress now lives in rewair_wifi_join.c (volatile
  * preserved), declared extern in rewair_wifi_join.h because
- * network_thread_main below reads it directly. */
-static volatile uint32_t wifi_time_synced = 0u;
-static volatile uint32_t wifi_last_ntp_sync_ms = 0u;
+ * network_thread_main below reads it directly.
+ * wifi_time_synced and wifi_last_ntp_sync_ms: owned by local_bridge.c
+ * (primary writers: network_after_ip_ready / network_sync_time_once,
+ * both stay here), but the console "forget"/"down" commands
+ * (rewair_console.c, Phase 2 Task 11) clear both directly -- `static`
+ * dropped, extern-declared at that call site in rewair_console.c (no
+ * accessor functions introduced, matching the wifi_join_in_progress /
+ * dct_wifi_mutex convention). */
+volatile uint32_t wifi_time_synced = 0u;
+volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
 static volatile uint32_t wifi_link_was_up = 0u;
 
@@ -243,105 +251,21 @@ int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size )
 /* network_after_ip_ready's forward declaration removed (Phase 2 Task 10):
  * it is now declared in rewair_wifi_join.h (included above) because the
  * moved wifi_join_command_ex calls it; the definition STAYS below, linkage
- * changed from static to external, body untouched. */
-static void sensor_reset_cycle( void );
+ * changed from static to external, body untouched.
+ *
+ * sensor_reset_cycle's forward declaration removed (Phase 2 Task 11): the
+ * moved console_handle_command (rewair_console.c) calls it, so it is now
+ * extern-declared at that one call site in rewair_console.c instead of a
+ * same-file forward declaration; the definition STAYS below (reset
+ * cluster), linkage changed from static to external, body unchanged
+ * (see the Task 11 report for the sensor_reset_release/sensor_reset_cycle
+ * dedup that also landed in this task). */
 
-static void console_prompt( void )
-{
-    printf( "awair> " );
-}
-
-static int console_read_line( char* line, uint32_t line_size )
-{
-    uint32_t pos = 0u;
-
-    while ( 1 )
-    {
-        int c = getchar( );
-
-        if ( c == '\r' || c == '\n' )
-        {
-            line[pos] = '\0';
-            printf( "\n" );
-            return 1;
-        }
-
-        if ( c == 0x08 || c == 0x7f )
-        {
-            if ( pos != 0u )
-            {
-                pos--;
-                printf( "\b \b" );
-            }
-            continue;
-        }
-
-        if ( c >= 0x20 && c <= 0x7e )
-        {
-            if ( pos + 1u < line_size )
-            {
-                line[pos++] = (char)c;
-                putchar( c );
-            }
-        }
-    }
-}
-
-static int console_tokenize( char* line, char* argv[], int max_argc )
-{
-    char* cursor = line;
-    int argc = 0;
-
-    while ( *cursor != '\0' )
-    {
-        while ( ascii_space( *cursor ) )
-        {
-            cursor++;
-        }
-
-        if ( *cursor == '\0' )
-        {
-            break;
-        }
-
-        if ( argc == max_argc )
-        {
-            return -1;
-        }
-
-        if ( *cursor == '"' )
-        {
-            cursor++;
-            argv[argc++] = cursor;
-
-            while ( *cursor != '\0' && *cursor != '"' )
-            {
-                cursor++;
-            }
-
-            if ( *cursor == '"' )
-            {
-                *cursor++ = '\0';
-            }
-        }
-        else
-        {
-            argv[argc++] = cursor;
-
-            while ( *cursor != '\0' && ascii_space( *cursor ) == 0 )
-            {
-                cursor++;
-            }
-
-            if ( *cursor != '\0' )
-            {
-                *cursor++ = '\0';
-            }
-        }
-    }
-
-    return argc;
-}
+/* console_prompt, console_read_line and console_tokenize moved to
+ * rewair_console.c (Phase 2 Task 11, pure move). Declarations now come from
+ * rewair_console.h (console_thread_main only -- the rest are static to
+ * rewair_console.c, since nothing outside the console cluster calls
+ * them). */
 
 /* wifi_security_name, parse_wifi_security, wifi_result_name,
  * find_best_scan_result_for_ssid, console_scan_cache_get and
@@ -390,295 +314,21 @@ void wifi_print_status( void )
  * rewair_wifi_join.h for wifi_join_command_ex instead of its former local
  * extern declaration.) */
 
-#define SFLASH_CONSOLE_READ_MAX 256u
+/* SFLASH_CONSOLE_READ_MAX, parse_hex_addr, sflash_id_command and
+ * sflash_read_command moved to rewair_console.c (Phase 2 Task 11, pure
+ * move) -- console-only wrappers around rewair_sflash_read_id /
+ * rewair_sflash_bounds_ok / rewair_sflash_read_bytes, which STAY here (the
+ * debug HTTP route in web_api.c calls rewair_sflash_read_bytes directly,
+ * so those three functions are shared and not console-only). All static;
+ * no linkage changes. */
 
-static int parse_hex_addr( const char* text, uint32_t* out )
-{
-    uint32_t value = 0u;
+/* console_print_help and console_handle_command moved to rewair_console.c
+ * (Phase 2 Task 11, pure move); both remain static there. */
 
-    if ( *text == '\0' )
-    {
-        return 0;
-    }
-    while ( *text != '\0' )
-    {
-        uint8_t nibble = 0u;
-        if ( from_hex( *text, &nibble ) == 0 )
-        {
-            return 0;
-        }
-        value = ( value << 4 ) | nibble;
-        text++;
-    }
-    *out = value;
-    return 1;
-}
-
-static void sflash_id_command( void )
-{
-    uint8_t id[3];
-
-    if ( rewair_sflash_read_id( id ) != 0 )
-    {
-        printf( "[sflash] id read failed\n" );
-        return;
-    }
-    printf( "[sflash] id: %02x %02x %02x\n", id[0], id[1], id[2] );
-}
-
-static void sflash_read_command( const char* addr_text, const char* len_text )
-{
-    uint32_t addr = 0u;
-    uint32_t len = 0u;
-    uint8_t buf[SFLASH_CONSOLE_READ_MAX];
-    uint32_t i;
-
-    if ( parse_hex_addr( addr_text, &addr ) == 0 )
-    {
-        printf( "usage: sflash read <hexaddr> <len>\n" );
-        return;
-    }
-    if ( parse_uint32( len_text, &len ) == 0 || len == 0u || len > SFLASH_CONSOLE_READ_MAX )
-    {
-        printf( "[sflash] len must be 1..%lu\n", (unsigned long)SFLASH_CONSOLE_READ_MAX );
-        return;
-    }
-    if ( rewair_sflash_bounds_ok( addr, len ) == 0 )
-    {
-        printf( "[sflash] addr 0x%lx len %lu beyond device (2 MiB)\n",
-                (unsigned long)addr, (unsigned long)len );
-        return;
-    }
-    if ( rewair_sflash_read_bytes( addr, buf, len ) != 0 )
-    {
-        printf( "[sflash] read failed at 0x%lx len %lu\n", (unsigned long)addr, (unsigned long)len );
-        return;
-    }
-    printf( "[sflash] read 0x%lx len %lu:\n", (unsigned long)addr, (unsigned long)len );
-    for ( i = 0u; i < len; i++ )
-    {
-        printf( "%02x%s", buf[i], ( ( i + 1u ) % 16u == 0u || i + 1u == len ) ? "\n" : " " );
-    }
-}
-
-static void console_print_help( void )
-{
-    printf( "commands:\n" );
-    printf( "  help\n" );
-    printf( "  scan\n" );
-    printf( "  join \"ssid\" \"pass\" [wpa2|wpa2-aes|wpa2-tkip|wpa|wpa-aes|wpa-tkip|open]\n" );
-    printf( "  join-index n \"pass\" [security]\n" );
-    printf( "  join-test-index n \"pass\" [security]\n" );
-    printf( "  join-open \"ssid\"\n" );
-    printf( "  frame CMD [field ...]\n" );
-    printf( "  time-now\n" );
-    printf( "  tinf [year]\n" );
-    printf( "  context\n" );
-    printf( "  sensor-reset\n" );
-    printf( "  forget\n" );
-    printf( "  saved\n" );
-    printf( "  down\n" );
-    printf( "  net\n" );
-    printf( "  sflash id\n" );
-    printf( "  sflash read <hexaddr> <len>\n" );
-}
-
-static void console_handle_command( int argc, char* argv[] )
-{
-    wiced_security_t security = WICED_SECURITY_WPA2_MIXED_PSK;
-
-    if ( argc == 0 )
-    {
-        return;
-    }
-
-    if ( cstr_eq( argv[0], "help" ) || cstr_eq( argv[0], "?" ) )
-    {
-        console_print_help( );
-    }
-    else if ( cstr_eq( argv[0], "scan" ) )
-    {
-        wifi_scan_start( );
-    }
-    else if ( cstr_eq( argv[0], "join" ) )
-    {
-        const wiced_scan_result_t* scan;
-        int force_security = 0;
-        if ( argc < 3 )
-        {
-            printf( "usage: join \"ssid\" \"pass\" [security]\n" );
-            return;
-        }
-        if ( argc >= 4 && parse_wifi_security( argv[3], &security ) == 0 )
-        {
-            printf( "[wifi] unknown security \"%s\"\n", argv[3] );
-            return;
-        }
-        force_security = argc >= 4;
-        scan = find_best_scan_result_for_ssid( argv[1] );
-        if ( scan == NULL )
-        {
-            printf( "[wifi] no cached scan result for \"%s\"; using guessed AP details\n", argv[1] );
-        }
-        wifi_join_command( argv[1], argv[2], security, scan, force_security );
-    }
-    else if ( cstr_eq( argv[0], "join-index" ) )
-    {
-        int force_security = 0;
-        if ( argc < 3 )
-        {
-            printf( "usage: join-index n \"pass\" [security]\n" );
-            return;
-        }
-        if ( argc >= 4 && parse_wifi_security( argv[3], &security ) == 0 )
-        {
-            printf( "[wifi] unknown security \"%s\"\n", argv[3] );
-            return;
-        }
-        force_security = argc >= 4;
-        wifi_join_index_command( argv[1], argv[2], security, force_security );
-    }
-    else if ( cstr_eq( argv[0], "join-test-index" ) )
-    {
-        int force_security = 0;
-        if ( argc < 3 )
-        {
-            printf( "usage: join-test-index n \"pass\" [security]\n" );
-            return;
-        }
-        if ( argc >= 4 && parse_wifi_security( argv[3], &security ) == 0 )
-        {
-            printf( "[wifi] unknown security \"%s\"\n", argv[3] );
-            return;
-        }
-        force_security = argc >= 4;
-        wifi_join_test_index_command( argv[1], argv[2], security, force_security );
-    }
-    else if ( cstr_eq( argv[0], "join-open" ) )
-    {
-        if ( argc < 2 )
-        {
-            printf( "usage: join-open \"ssid\"\n" );
-            return;
-        }
-        wifi_join_command( argv[1], "", WICED_SECURITY_OPEN, find_best_scan_result_for_ssid( argv[1] ), 1 );
-    }
-    else if ( cstr_eq( argv[0], "frame" ) )
-    {
-        if ( argc < 2 || cstr_len( argv[1] ) != 4u )
-        {
-            printf( "usage: frame CMD [field ...]\n" );
-            return;
-        }
-        sensor_send_frame( argv[1], &argv[2], (uint32_t)( argc - 2 ) );
-    }
-    else if ( cstr_eq( argv[0], "time-now" ) )
-    {
-        wiced_utc_time_t utc_seconds = 0u;
-        if ( wiced_time_get_utc_time( &utc_seconds ) == WICED_SUCCESS && utc_seconds != 0u )
-        {
-            send_time_context( utc_seconds );
-        }
-        else
-        {
-            printf( "[time] UTC clock is not set yet\n" );
-        }
-    }
-    else if ( cstr_eq( argv[0], "tinf" ) )
-    {
-        uint32_t year = 2026u;
-        if ( argc >= 2 && parse_uint32( argv[1], &year ) == 0 )
-        {
-            printf( "usage: tinf [year]\n" );
-            return;
-        }
-        send_tinf_from_rule( &current_tz_rule, year );
-    }
-    else if ( cstr_eq( argv[0], "context" ) )
-    {
-        sensor_boot_context_sent = 0u;
-        send_sensor_boot_context( );
-    }
-    else if ( cstr_eq( argv[0], "sensor-reset" ) )
-    {
-        sensor_reset_cycle( );
-    }
-    else if ( cstr_eq( argv[0], "forget" ) )
-    {
-        wiced_network_down( WICED_STA_INTERFACE );
-        wiced_leave_ap( WICED_STA_INTERFACE );
-        wifi_time_synced = 0u;
-        wifi_last_ntp_sync_ms = 0u;
-        wifi_clear_stored_credentials( );
-    }
-    else if ( cstr_eq( argv[0], "saved" ) )
-    {
-        wifi_print_saved_credentials( );
-    }
-    else if ( cstr_eq( argv[0], "down" ) )
-    {
-        wiced_network_down( WICED_STA_INTERFACE );
-        wiced_leave_ap( WICED_STA_INTERFACE );
-        wifi_time_synced = 0u;
-        wifi_last_ntp_sync_ms = 0u;
-        printf( "[wifi] down\n" );
-    }
-    else if ( cstr_eq( argv[0], "net" ) )
-    {
-        wifi_print_status( );
-        wifi_print_saved_credentials( );
-    }
-    else if ( cstr_eq( argv[0], "sflash" ) )
-    {
-        if ( argc >= 2 && cstr_eq( argv[1], "id" ) )
-        {
-            sflash_id_command( );
-        }
-        else if ( argc >= 4 && cstr_eq( argv[1], "read" ) )
-        {
-            sflash_read_command( argv[2], argv[3] );
-        }
-        else
-        {
-            printf( "usage: sflash id | sflash read <hexaddr> <len>\n" );
-        }
-    }
-    else
-    {
-        printf( "unknown command: %s\n", argv[0] );
-    }
-}
-
-static void console_thread_main( uint32_t arg )
-{
-    char line[CONSOLE_LINE_MAX];
-    char* argv[CONSOLE_ARG_MAX];
-    int argc;
-
-    (void)arg;
-
-    printf( "\nconsole ready; type help\n" );
-    console_prompt( );
-
-    while ( 1 )
-    {
-        if ( console_read_line( line, sizeof( line ) ) == 0 )
-        {
-            continue;
-        }
-
-        argc = console_tokenize( line, argv, CONSOLE_ARG_MAX );
-        if ( argc < 0 )
-        {
-            printf( "too many args\n" );
-        }
-        else
-        {
-            console_handle_command( argc, argv );
-        }
-        console_prompt( );
-    }
-}
+/* console_thread_main moved to rewair_console.c (Phase 2 Task 11, pure
+ * move); declaration now comes from rewair_console.h. application_start's
+ * wiced_rtos_create_thread call site below is unchanged except for
+ * resolving the symbol through that header. */
 
 static wiced_result_t network_sync_time_once( uint32_t* utc_seconds_out )
 {
@@ -1231,7 +881,13 @@ static void sensor_thread_main( uint32_t arg )
     }
 }
 
-static void sensor_reset_release( void )
+/* Phase 2 Task 11 sanctioned dedup: sensor_reset_release and
+ * sensor_reset_cycle shared an identical boot-state-reset prefix (the 8
+ * counter/flag clears + sensor_frame_reset + the GPIO output-mode init).
+ * Extracted verbatim into this helper; everything after it (the actual
+ * release-vs-pulse GPIO sequencing and the differing log message) stays in
+ * the respective callers untouched -- no behavior change. */
+static void sensor_boot_state_reset( void )
 {
     sensor_boot_context_sent = 0u;
     sensor_sens_seen = 0u;
@@ -1244,24 +900,24 @@ static void sensor_reset_release( void )
     sensor_frame_reset( &sensor_rx );
 
     wiced_gpio_init( AWAIR_SENSOR_RESET, OUTPUT_PUSH_PULL );
+}
+
+static void sensor_reset_release( void )
+{
+    sensor_boot_state_reset( );
+
     wiced_gpio_output_high( AWAIR_SENSOR_RESET );
     sensor_reset_released = 1u;
     printf( "[boot] sensor reset line released on PB12\n" );
 }
 
-static void sensor_reset_cycle( void )
+/* Was static; linkage changed to external (Phase 2 Task 11) so the moved
+ * console "sensor-reset" command (rewair_console.c) can call it. Body
+ * otherwise unchanged (aside from the sanctioned dedup above). */
+void sensor_reset_cycle( void )
 {
-    sensor_boot_context_sent = 0u;
-    sensor_sens_seen = 0u;
-    sensor_netw_boot_pulses = 0u;
-    sensor_netw_nudge_count = 0u;
-    sensor_last_nudge_ms = 0u;
-    sensor_disp_clock_canary_sent = 0u;
-    sensor_raw_trace_count = 0u;
-    sensor_raw_trace_reported = 0u;
-    sensor_frame_reset( &sensor_rx );
+    sensor_boot_state_reset( );
 
-    wiced_gpio_init( AWAIR_SENSOR_RESET, OUTPUT_PUSH_PULL );
     wiced_gpio_output_low( AWAIR_SENSOR_RESET );
     wiced_rtos_delay_milliseconds( 10u );
     wiced_gpio_output_high( AWAIR_SENSOR_RESET );
