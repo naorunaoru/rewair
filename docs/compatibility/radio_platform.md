@@ -13,10 +13,10 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
   `rewair_state` (live status cache + SSE notification hook),
   `rewair_settings`, `rewair_tz` (POSIX-TZ), `rewair_frames`/`rewair_frame_rx`
   (F103 frame codec), `rewair_wifi_dct`/`rewair_wifi_scan`/`rewair_wifi_join`,
-  `rewair_console`, `rewair_score`, `rewair_walltime`, `rewair_json` (with
-  vendored `jsmn.c`/`jsmn.h`), `rewair_drops`, `rewair_uifs` (RWFS reader for
-  the external-sflash-hosted UI image), and `web_api.c`/`web_ui.c` (HTTP
-  routes and UI serving).
+  `rewair_console`, `rewair_score`, `rewair_walltime`, `rewair_fmt`
+  (string/IP/MAC/SSID formatting), `rewair_json` (with vendored `jsmn.c`/`jsmn.h`),
+  `rewair_drops`, `rewair_uifs` (RWFS reader for the external-sflash-hosted UI image),
+  and `web_api.c`/`web_ui.c` (HTTP routes and UI serving).
 - `wiced/platforms/AWAIR`: Awair/EMW3165 platform port and pin map used by the
   WICED SDK build, including the external SPI flash pin mapping (see
   [External SPI Flash](#external-spi-flash) below).

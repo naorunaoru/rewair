@@ -167,7 +167,7 @@ tools/f103_debug/trace_f103_uart_handlers.zsh
 ```
 
 Fallback bare-metal sensor console (isolates F103 protocol behavior from the
-WICED UART/DMA path):
+WICED UART/DMA path; needs arm-none-eabi- toolchain on PATH — see README prerequisites):
 
 ```sh
 make -C tools/legacy/emw3165_sensor_console

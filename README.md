@@ -32,6 +32,8 @@ What's inside of the Element?
   - `rewair_console`: serial console command parser.
   - `rewair_score`: sensor-index-to-score math.
   - `rewair_walltime`: epoch/wall-clock helpers.
+  - `rewair_fmt`: string/IP/MAC/SSID formatting helpers; host-testable core
+    with firmware-only parts guarded by `REWAIR_HOST_BUILD`.
   - `rewair_json`: minimal JSON emitter and request-body reader (uses the
     vendored `jsmn.c`/`jsmn.h` parser).
   - `rewair_drops`: dropped-frame counters.
@@ -86,10 +88,10 @@ tracked here.
   `arm-none-eabi` GCC toolchain under `tools/ARM_GNU/bin/OSX/` — the repo's
   build scripts call it via that path, so you do **not** need to separately
   install an ARM toolchain to build or flash firmware. (If you want to use
-  `tools/f103_debug`'s GDB scripts, those invoke `arm-none-eabi-gdb` from
-  your `PATH`; either add the SDK's `tools/ARM_GNU/bin/OSX/` to `PATH`, or
-  `brew install arm-none-eabi-gdb` separately — not required for the core
-  build/flash/UI/smoke workflow below.)
+  `tools/f103_debug`'s GDB scripts or build the optional legacy console
+  (`tools/legacy/emw3165_sensor_console`), those need a standalone
+  `arm-none-eabi` toolchain on `PATH` — e.g. `brew install --cask gcc-arm-embedded`.
+  Not required for the core build/flash/UI/smoke workflow below.)
 - **probe-rs** (`brew install probe-rs` or see
   <https://probe.rs/docs/getting-started/installation/>) — used for
   firmware flashing and to reset the target after an sflash write.
@@ -165,12 +167,11 @@ Then open the printed `localhost` URL with `?device=<device-ip>` appended,
 e.g. `http://localhost:5173/?device=192.168.1.242`. The UI adapter
 (`rw-api.js`) reads that query param and points all `fetch`/`EventSource`
 calls at `http://<device-ip>` instead of same-origin. This cross-origin
-fetch only works against a firmware build with CORS enabled
-(`REWAIR_API_CORS_DEV`, see [Web API Summary](#web-api-summary)); the plain
-`scripts/build_local_bridge.zsh` build does not currently define it, so add
-`GLOBAL_DEFINES += REWAIR_API_CORS_DEV` to
-`wiced/apps/rewair/local_bridge/local_bridge.mk` before building if you want
-to use `npm run dev` against your device.
+fetch only works against a firmware build with CORS enabled — dev CORS and
+the `/api/debug/sflash` route are enabled out of the box because
+`wiced/apps/rewair/local_bridge/web_api.h` defines `REWAIR_API_CORS_DEV` at
+line 11 (comment: "ON during phase 1 bring-up; turn off for release"). To
+build a release without them, comment out that define in `web_api.h`.
 
 Build the production bundle (this is what actually ships to the device):
 
@@ -217,9 +218,9 @@ the packer at `webui/scripts/pack-rwfs.mjs`). The address space below
 `0x1C0000` holds the stock WLAN firmware blob and other factory-programmed
 content; `flash_sflash_openocd.zsh` refuses to write there unless `FORCE=1`.
 
-Console commands (over the serial debug console) and a dev-only HTTP route
+Console commands (over the serial debug console) and a debug HTTP route
 both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
-(compiled only under `REWAIR_API_CORS_DEV`) returns
+(compiled under `REWAIR_API_CORS_DEV`, currently enabled by default) returns
 `{"jedec":"...", "addr":"...", "data":"<hex>"}`.
 
 ## Smoke Test
@@ -257,7 +258,7 @@ requests CORS-"simple") in addition to `application/json`.
 | `/api/disp` | POST | Set the F103 display mode. |
 | `/api/update` | POST | Firmware OTA — not implemented, returns 501. |
 | `/api/reset` | POST | Clear saved Wi-Fi credentials and settings, then reboot. |
-| `/api/debug/sflash` | GET | Dev-only (`REWAIR_API_CORS_DEV`) raw SPI-flash readback for debugging. |
+| `/api/debug/sflash` | GET | Debug route (compiled under `REWAIR_API_CORS_DEV`, currently enabled by default — see `web_api.h`) raw SPI-flash readback for debugging. |
 | `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image in external flash (or a small built-in fallback page for `/` if no image is flashed yet). |
 
 ## Current State
