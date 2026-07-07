@@ -25,6 +25,7 @@
 static wiced_http_server_t http_server;
 static uint32_t            server_started = 0u;
 static uint8_t             server_init_done = 0u;
+static volatile uint8_t    sse_shutting_down = 0u;
 
 #ifdef REWAIR_API_CORS_DEV
 #define API_CORS_HEADER "Access-Control-Allow-Origin: *\r\n"
@@ -1026,6 +1027,17 @@ static void sse_add_subscriber( wiced_tcp_socket_t* socket )
     uint32_t i;
 
     wiced_rtos_lock_mutex( &sse_mutex );
+    if ( sse_shutting_down != 0u )
+    {
+        /* rewair_web_api_stop() already cleared the table; a socket added now
+         * would be closed/freed by wiced_http_server_stop() while the
+         * still-running broadcaster kept a pointer to it (use-after-free).
+         * Refuse the add and hand the socket back to the daemon's own
+         * disconnect path (same call the eviction path below uses). */
+        wiced_rtos_unlock_mutex( &sse_mutex );
+        wiced_http_server_queue_disconnect_request( &http_server, socket );
+        return;
+    }
     for ( i = 0u; i < SSE_MAX_SUBS; i++ )
     {
         if ( sse_subs[i] == NULL )
@@ -1261,6 +1273,7 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
                                       API_WORKER_STACK );
     if ( result == WICED_SUCCESS )
     {
+        sse_shutting_down = 0u;
         server_started = 1u;
         printf( "[web] http server up on port 80\n" );
     }
@@ -1271,6 +1284,17 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
     return result;
 }
 
+/* Contract: rewair_web_api_start()/rewair_web_api_stop() must only ever be
+ * called from a single control thread (the network-mode thread) -- they are
+ * not safe to race against each other. sse_shutting_down closes the window
+ * where a request entering sse_add_subscriber after the table is cleared
+ * below (but before wiced_http_server_stop kills the daemon threads) would
+ * re-add a socket that stop() then closes/frees while the still-running
+ * broadcaster keeps its pointer (use-after-free). A microscopic window
+ * remains where the SDK's drain-less wiced_rtos_delete_worker_thread could
+ * delete a worker mid-sse_add_subscriber while it holds sse_mutex, wedging
+ * the mutex forever; that is inherent to the SDK's stop and accepted --
+ * mode transitions are rare and human-initiated. */
 wiced_result_t rewair_web_api_stop( void )
 {
     uint32_t i;
@@ -1280,6 +1304,7 @@ wiced_result_t rewair_web_api_stop( void )
         return WICED_SUCCESS;
     }
 
+    sse_shutting_down = 1u;
     wiced_rtos_lock_mutex( &sse_mutex );
     for ( i = 0u; i < SSE_MAX_SUBS; i++ )
     {
