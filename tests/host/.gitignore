@@ -3,3 +3,4 @@ test_tz
 test_req
 test_status
 test_uifs
+test_walltime

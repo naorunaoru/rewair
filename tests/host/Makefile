@@ -2,7 +2,7 @@ CC     ?= cc
 SRCDIR := ../../wiced/apps/rewair/local_bridge
 CFLAGS := -std=c99 -Wall -Wextra -Werror -I$(SRCDIR) -DJSMN_PARENT_LINKS
 
-TESTS := test_drops test_tz test_req test_status test_uifs
+TESTS := test_drops test_tz test_req test_status test_uifs test_walltime
 
 RWFS_FIXTURE := /tmp/test_uifs_fixture.rwfs
 
@@ -23,6 +23,9 @@ test_status: test_status.c $(SRCDIR)/rewair_json.c $(SRCDIR)/jsmn.c
 test_uifs: test_uifs.c $(SRCDIR)/rewair_uifs.c
 	node ../../webui/scripts/pack-rwfs.mjs $(RWFS_FIXTURE) \
 		fixtures/index.html:/ fixtures/app.js:/app.js fixtures/rewair.css:/rewair.css
+	$(CC) $(CFLAGS) -o $@ $^ && ./$@
+
+test_walltime: test_walltime.c $(SRCDIR)/rewair_walltime.c
 	$(CC) $(CFLAGS) -o $@ $^ && ./$@
 
 clean:

@@ -19,6 +19,8 @@
 #include "rewair_state.h"
 #include "rewair_tz.h"
 #include "rewair_settings.h"
+#include "rewair_fmt.h"
+#include "rewair_walltime.h"
 #include "web_api.h"
 #include "spi_flash.h"
 #include "spi_flash_internal.h" /* device_id_t + sflash_read_ID (on GLOBAL_INCLUDES via drivers/spi_flash component) */
@@ -279,41 +281,6 @@ void send_time_context( uint32_t utc_seconds );
 static void send_disp_clock_canary( void );
 static void sensor_reset_cycle( void );
 
-static uint32_t cstr_len( const char* s )
-{
-    uint32_t n = 0u;
-    while ( s[n] != '\0' )
-    {
-        n++;
-    }
-    return n;
-}
-
-static int cstr_eq( const char* a, const char* b )
-{
-    while ( *a == *b )
-    {
-        if ( *a == '\0' )
-        {
-            return 1;
-        }
-        a++;
-        b++;
-    }
-    return 0;
-}
-
-static int cmd4_eq( const char cmd[4], const char* text )
-{
-    return cmd[0] == text[0] && cmd[1] == text[1] && cmd[2] == text[2] &&
-           cmd[3] == text[3] && text[4] == '\0';
-}
-
-static int ascii_space( char c )
-{
-    return c == ' ' || c == '\t';
-}
-
 static void console_prompt( void )
 {
     printf( "awair> " );
@@ -476,29 +443,6 @@ static int parse_wifi_security( const char* text, wiced_security_t* security )
     return 0;
 }
 
-static int parse_uint32( const char* text, uint32_t* out )
-{
-    uint32_t value = 0u;
-
-    if ( *text == '\0' )
-    {
-        return 0;
-    }
-
-    while ( *text != '\0' )
-    {
-        if ( *text < '0' || *text > '9' )
-        {
-            return 0;
-        }
-        value = ( value * 10u ) + (uint32_t)( *text - '0' );
-        text++;
-    }
-
-    *out = value;
-    return 1;
-}
-
 static const char* wifi_result_name( wiced_result_t result )
 {
     switch ( result )
@@ -526,61 +470,6 @@ static const char* wifi_result_name( wiced_result_t result )
         default:
             return "unknown";
     }
-}
-
-static void print_ipv4( const wiced_ip_address_t* address )
-{
-    uint32_t ipv4 = GET_IPV4_ADDRESS( *address );
-    printf( "%lu.%lu.%lu.%lu",
-            (unsigned long)( ( ipv4 >> 24 ) & 0xffu ),
-            (unsigned long)( ( ipv4 >> 16 ) & 0xffu ),
-            (unsigned long)( ( ipv4 >> 8 ) & 0xffu ),
-            (unsigned long)( ipv4 & 0xffu ) );
-}
-
-static void ipv4_to_cstr( const wiced_ip_address_t* address, char out[16] )
-{
-    uint32_t ipv4 = GET_IPV4_ADDRESS( *address );
-    sprintf( out, "%lu.%lu.%lu.%lu",
-             (unsigned long)( ( ipv4 >> 24 ) & 0xffu ),
-             (unsigned long)( ( ipv4 >> 16 ) & 0xffu ),
-             (unsigned long)( ( ipv4 >> 8 ) & 0xffu ),
-             (unsigned long)( ipv4 & 0xffu ) );
-}
-
-static void mac_to_cstr( const wiced_mac_t* mac, char out[18] )
-{
-    sprintf( out, "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac->octet[0], mac->octet[1], mac->octet[2],
-             mac->octet[3], mac->octet[4], mac->octet[5] );
-}
-
-static void print_ssid( const wiced_ssid_t* ssid )
-{
-    uint32_t i;
-    for ( i = 0u; i < ssid->length && i < SSID_NAME_SIZE; i++ )
-    {
-        uint8_t c = ssid->value[i];
-        printf( "%c", ( c >= 0x20u && c <= 0x7eu ) ? c : '.' );
-    }
-}
-
-static int ssid_eq_text( const wiced_ssid_t* ssid, const char* text )
-{
-    uint32_t length = cstr_len( text );
-    if ( length != ssid->length || length > SSID_NAME_SIZE )
-    {
-        return 0;
-    }
-    return memcmp( ssid->value, text, length ) == 0;
-}
-
-/* Compares two plain NUL-terminated SSID strings (e.g. rewair_status_t.ssid
- * against a request's ssid), unlike ssid_eq_text which compares against a
- * length-prefixed wiced_ssid_t. */
-static int ssid_eq_text_cstr( const char* a, const char* b )
-{
-    return cstr_eq( a, b );
 }
 
 const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text )
@@ -1527,9 +1416,6 @@ static void wifi_join_index_command( const char* index_text, const char* pass_te
     wifi_join_command( (const char*)scan->SSID.value, pass_text, security, scan, force_security );
 }
 
-/* forward decl: defined later in this file, reused here for hex parsing */
-static int from_hex( char c, uint8_t* value );
-
 #define SFLASH_CONSOLE_READ_MAX 256u
 
 static int parse_hex_addr( const char* text, uint32_t* out )
@@ -1820,60 +1706,6 @@ static void console_thread_main( uint32_t arg )
     }
 }
 
-static int from_hex( char c, uint8_t* value )
-{
-    if ( c >= '0' && c <= '9' )
-    {
-        *value = (uint8_t)( c - '0' );
-        return 1;
-    }
-    if ( c >= 'a' && c <= 'f' )
-    {
-        *value = (uint8_t)( c - 'a' + 10 );
-        return 1;
-    }
-    if ( c >= 'A' && c <= 'F' )
-    {
-        *value = (uint8_t)( c - 'A' + 10 );
-        return 1;
-    }
-    return 0;
-}
-
-static char hex_nibble( uint8_t value )
-{
-    value &= 0xfu;
-    return (char)( value < 10u ? ( '0' + value ) : ( 'A' + value - 10u ) );
-}
-
-static uint32_t decode_hex_len( const uint8_t* text, int* ok )
-{
-    uint32_t value = 0u;
-    uint32_t i;
-    *ok = 1;
-    for ( i = 0; i < 8u; i++ )
-    {
-        uint8_t nibble = 0u;
-        if ( from_hex( (char)text[i], &nibble ) == 0 )
-        {
-            *ok = 0;
-            return 0u;
-        }
-        value = ( value << 4 ) | nibble;
-    }
-    return value;
-}
-
-static void frame_len_hex( uint32_t value, char out[9] )
-{
-    int shift;
-    for ( shift = 28; shift >= 0; shift -= 4 )
-    {
-        *out++ = hex_nibble( (uint8_t)( value >> (uint32_t)shift ) );
-    }
-    *out = '\0';
-}
-
 static void sensor_frame_reset( sensor_rx_t* rx )
 {
     rx->state = 0u;
@@ -1899,77 +1731,6 @@ static const char* payload_next_field( const uint8_t* payload, uint32_t length, 
     }
     ( *offset )++;
     return (const char*)&payload[start];
-}
-
-static int parse_fixed_centi( const char* text, int32_t* out )
-{
-    int negative = 0;
-    uint32_t whole = 0u;
-    uint32_t frac = 0u;
-    uint32_t frac_digits = 0u;
-    int saw_digit = 0;
-    int32_t value;
-
-    if ( *text == '-' )
-    {
-        negative = 1;
-        text++;
-    }
-    else if ( *text == '+' )
-    {
-        text++;
-    }
-
-    while ( *text >= '0' && *text <= '9' )
-    {
-        saw_digit = 1;
-        whole = ( whole * 10u ) + (uint32_t)( *text - '0' );
-        text++;
-    }
-
-    if ( *text == '.' )
-    {
-        text++;
-        while ( *text >= '0' && *text <= '9' )
-        {
-            if ( frac_digits < 2u )
-            {
-                frac = ( frac * 10u ) + (uint32_t)( *text - '0' );
-                frac_digits++;
-            }
-            else if ( frac_digits == 2u && *text >= '5' )
-            {
-                frac++;
-                frac_digits++;
-            }
-            saw_digit = 1;
-            text++;
-        }
-    }
-
-    if ( saw_digit == 0 || *text != '\0' )
-    {
-        return 0;
-    }
-
-    while ( frac_digits < 2u )
-    {
-        frac *= 10u;
-        frac_digits++;
-    }
-    if ( frac >= 100u )
-    {
-        whole++;
-        frac -= 100u;
-    }
-
-    value = (int32_t)( ( whole * 100u ) + frac );
-    if ( negative != 0 )
-    {
-        value = -value;
-    }
-    *out = value;
-    return 1;
 }
 
 static int32_t centi_to_int( int32_t centi )
@@ -2052,152 +1813,6 @@ static uint32_t penalty_above( int32_t value, int32_t good_max, int32_t full_bad
     }
     return (uint32_t)( ( (uint32_t)delta * max_penalty + ( (uint32_t)full_bad_delta / 2u ) ) /
                        (uint32_t)full_bad_delta );
-}
-
-static void int32_to_cstr( int32_t value, char* out, uint32_t out_len )
-{
-    char tmp[11];
-    uint32_t pos = 0u;
-    uint32_t uvalue;
-
-    if ( out_len == 0u )
-    {
-        return;
-    }
-
-    if ( value < 0 )
-    {
-        *out++ = '-';
-        out_len--;
-        uvalue = (uint32_t)( -( value + 1 ) ) + 1u;
-    }
-    else
-    {
-        uvalue = (uint32_t)value;
-    }
-
-    if ( out_len == 0u )
-    {
-        return;
-    }
-
-    if ( uvalue == 0u )
-    {
-        *out++ = '0';
-        if ( out_len > 1u )
-        {
-            *out = '\0';
-        }
-        return;
-    }
-
-    while ( uvalue != 0u && pos < sizeof( tmp ) )
-    {
-        tmp[pos++] = (char)( '0' + ( uvalue % 10u ) );
-        uvalue /= 10u;
-    }
-
-    while ( pos != 0u && out_len > 1u )
-    {
-        *out++ = tmp[--pos];
-        out_len--;
-    }
-    *out = '\0';
-}
-
-typedef struct
-{
-    uint32_t year;
-    uint32_t month;
-    uint32_t day;
-    uint32_t hour;
-    uint32_t minute;
-    uint32_t second;
-} wall_time_t;
-
-static int date_is_leap( uint32_t year )
-{
-    return ( ( year % 4u ) == 0u && ( year % 100u ) != 0u ) || ( year % 400u ) == 0u;
-}
-
-static uint32_t date_days_in_month( uint32_t year, uint32_t month )
-{
-    static const uint8_t days[] = { 31u, 28u, 31u, 30u, 31u, 30u, 31u, 31u, 30u, 31u, 30u, 31u };
-    if ( month == 2u && date_is_leap( year ) != 0 )
-    {
-        return 29u;
-    }
-    return days[month - 1u];
-}
-
-static void epoch_utc_to_wall( uint32_t epoch_seconds, wall_time_t* out )
-{
-    uint32_t days = epoch_seconds / 86400u;
-    uint32_t seconds = epoch_seconds % 86400u;
-    uint32_t year = 1970u;
-    uint32_t month = 1u;
-
-    while ( 1 )
-    {
-        uint32_t year_days = date_is_leap( year ) != 0 ? 366u : 365u;
-        if ( days < year_days )
-        {
-            break;
-        }
-        days -= year_days;
-        year++;
-    }
-
-    while ( 1 )
-    {
-        uint32_t month_days = date_days_in_month( year, month );
-        if ( days < month_days )
-        {
-            break;
-        }
-        days -= month_days;
-        month++;
-    }
-
-    out->year = year;
-    out->month = month;
-    out->day = days + 1u;
-    out->hour = seconds / 3600u;
-    seconds %= 3600u;
-    out->minute = seconds / 60u;
-    out->second = seconds % 60u;
-}
-
-static void write_dec2( char* out, uint32_t value )
-{
-    out[0] = (char)( '0' + ( ( value / 10u ) % 10u ) );
-    out[1] = (char)( '0' + ( value % 10u ) );
-}
-
-static void write_dec4( char* out, uint32_t value )
-{
-    out[0] = (char)( '0' + ( ( value / 1000u ) % 10u ) );
-    out[1] = (char)( '0' + ( ( value / 100u ) % 10u ) );
-    out[2] = (char)( '0' + ( ( value / 10u ) % 10u ) );
-    out[3] = (char)( '0' + ( value % 10u ) );
-}
-
-static void wall_time_to_compact( const wall_time_t* wall, char out[15] )
-{
-    write_dec4( &out[0], wall->year );
-    write_dec2( &out[4], wall->month );
-    write_dec2( &out[6], wall->day );
-    write_dec2( &out[8], wall->hour );
-    write_dec2( &out[10], wall->minute );
-    write_dec2( &out[12], wall->second );
-    out[14] = '\0';
-}
-
-static void compact_utc_time_with_offset( uint32_t utc_seconds, int32_t offset_seconds, char out[15] )
-{
-    wall_time_t wall;
-    epoch_utc_to_wall( utc_seconds + (uint32_t)offset_seconds, &wall );
-    wall_time_to_compact( &wall, out );
 }
 
 static uint32_t fields_payload_len( char** fields, uint32_t count )
