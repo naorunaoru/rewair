@@ -4,6 +4,7 @@
 set -e
 IP="${REWAIR_IP:?set REWAIR_IP to the device address}"
 BASE="http://$IP"
+SMOKE_DIR="${0:A:h}"   # capture at top level; $0 inside a function is the function name
 fail=0
 
 check() {
@@ -44,5 +45,9 @@ check "GET / has Content-Encoding gzip" sh -c "curl -s -D - -o /dev/null '$BASE/
 check "GET / has Content-Length"    sh -c "curl -s -D - -o /dev/null '$BASE/' | grep -qi '^Content-Length: *[0-9]'"
 check "GET /app.js is 200"          sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE/app.js')\" = 200 ]"
 check "GET /nope.js is 404"         sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE/nope.js')\" = 404 ]"
+
+# Split-packet POST body (browser-style headers/body segmentation); curl alone
+# can't exercise this because it coalesces small bodies into one segment.
+check "split-packet POST body accepted" env REWAIR_IP="$IP" "$SMOKE_DIR/check_post_body.py"
 
 exit $fail

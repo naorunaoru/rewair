@@ -15,6 +15,7 @@ async function req(path, opts) {
     err.status = r.status;
     throw err;
   }
+  if (r.status === 204) return null;           // No Content — nothing to parse
   const ct = r.headers.get('content-type') || '';
   return ct.includes('json') ? r.json() : null;
 }
