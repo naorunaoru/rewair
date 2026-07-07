@@ -17,10 +17,10 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface );
  * but a later chunk read failed) -- see web_ui.c's web_ui_serve. */
 void rewair_web_api_disconnect_stream( wiced_http_response_stream_t* stream );
 
-/* provided by local_bridge.c */
-uint32_t                   sensor_scan_blocking( void );
-const wiced_scan_result_t* console_scan_cache_get( uint32_t index );
-const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text );
+/* Wi-Fi scan cache access (sensor_scan_blocking, console_scan_cache_get,
+ * find_best_scan_result_for_ssid) now declared in rewair_wifi_scan.h
+ * (Phase 2 Task 10, pure move out of local_bridge.c). web_api.c includes
+ * rewair_wifi_scan.h directly for these. */
 
 /* Wi-Fi DCT credential/list management (wifi_dct_saved_count, wifi_list_add,
  * wifi_list_remove, wifi_list_reorder, wifi_list_get, wifi_clear_stored_credentials)

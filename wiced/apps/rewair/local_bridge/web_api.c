@@ -10,6 +10,7 @@
 #include "rewair_tz.h"
 #include "rewair_frames.h"
 #include "rewair_wifi_dct.h"
+#include "rewair_wifi_scan.h"
 #include "web_ui.h"
 
 #define API_BODY_MAX      1024u

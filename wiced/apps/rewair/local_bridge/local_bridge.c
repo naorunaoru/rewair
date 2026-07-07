@@ -25,6 +25,8 @@
 #include "rewair_frame_rx.h"
 #include "rewair_frames.h"
 #include "rewair_wifi_dct.h"
+#include "rewair_wifi_scan.h"
+#include "rewair_wifi_join.h"
 #include "web_api.h"
 #include "spi_flash.h"
 #include "spi_flash_internal.h" /* device_id_t + sflash_read_ID (on GLOBAL_INCLUDES via drivers/spi_flash component) */
@@ -35,7 +37,6 @@
 #define NETWORK_THREAD_STACK_SIZE 6144u
 #define CONSOLE_LINE_MAX 160u
 #define CONSOLE_ARG_MAX 32
-#define CONSOLE_SCAN_CACHE_MAX 16u
 #define SENSOR_DIAG_REPEAT_MS 1000u
 #define SENSOR_STAT_REPEAT_MS 10000u
 #define SENSOR_NUDGE_START_MS 5000u
@@ -112,21 +113,14 @@ static volatile uint32_t sensor_last_frame_trailer = 0u;
 static uint8_t sensor_raw_trace[SENSOR_RAW_TRACE_MAX];
 static volatile uint32_t sensor_raw_trace_count = 0u;
 static uint32_t sensor_raw_trace_reported = 0u;
-static volatile uint32_t console_scan_count = 0u;
-static uint32_t console_scan_cache_count = 0u;
-static wiced_scan_result_t console_scan_cache[CONSOLE_SCAN_CACHE_MAX];
-static wiced_semaphore_t scan_done_semaphore;
-static uint32_t scan_semaphore_inited = 0u;
-static volatile uint32_t scan_in_progress = 0u;
-/* Benign-race guard between the console "scan" command (console thread) and
- * /api/scan (HTTP worker thread): both would otherwise reset console_scan_cache
- * and console_scan_cache_count concurrently and corrupt each other's results.
- * This is not a strict mutex (no cheap atomics on this platform) -- it just
- * prevents cache clobbering from concurrent scans; a rare TOCTOU sliver where
- * both sides read 0 and proceed is acceptable since the worst case is one
- * scan's results getting overwritten, not corrupted. */
-static volatile uint32_t scan_busy = 0u;
-static volatile uint32_t wifi_join_in_progress = 0u;
+/* console_scan_count, console_scan_cache(_count), scan_done_semaphore,
+ * scan_semaphore_inited, scan_in_progress, scan_busy (+ its benign-race
+ * documentation comment, moved verbatim) now live in rewair_wifi_scan.c
+ * (Phase 2 Task 10, pure move; all still static there -- every outside
+ * reader goes through the accessors in rewair_wifi_scan.h).
+ * wifi_join_in_progress now lives in rewair_wifi_join.c (volatile
+ * preserved), declared extern in rewair_wifi_join.h because
+ * network_thread_main below reads it directly. */
 static volatile uint32_t wifi_time_synced = 0u;
 static volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
@@ -246,7 +240,10 @@ int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size )
     return ( rc == 0 ) ? 0 : -1;
 }
 
-static void network_after_ip_ready( void );
+/* network_after_ip_ready's forward declaration removed (Phase 2 Task 10):
+ * it is now declared in rewair_wifi_join.h (included above) because the
+ * moved wifi_join_command_ex calls it; the definition STAYS below, linkage
+ * changed from static to external, body untouched. */
 static void sensor_reset_cycle( void );
 
 static void console_prompt( void )
@@ -346,149 +343,17 @@ static int console_tokenize( char* line, char* argv[], int max_argc )
     return argc;
 }
 
-/* Was static; linkage changed to external (Phase 2 Task 9) so
- * rewair_wifi_dct.c's moved functions can call it. Body unchanged. */
-const char* wifi_security_name( wiced_security_t security )
-{
-    switch ( security )
-    {
-        case WICED_SECURITY_OPEN:
-            return "open";
-        case WICED_SECURITY_WEP_PSK:
-            return "wep";
-        case WICED_SECURITY_WPA_TKIP_PSK:
-            return "wpa-tkip";
-        case WICED_SECURITY_WPA_AES_PSK:
-            return "wpa-aes";
-        case WICED_SECURITY_WPA_MIXED_PSK:
-            return "wpa-mixed";
-        case WICED_SECURITY_WPA2_AES_PSK:
-            return "wpa2-aes";
-        case WICED_SECURITY_WPA2_TKIP_PSK:
-            return "wpa2-tkip";
-        case WICED_SECURITY_WPA2_MIXED_PSK:
-            return "wpa2-mixed";
-        default:
-            return "unknown";
-    }
-}
+/* wifi_security_name, parse_wifi_security, wifi_result_name,
+ * find_best_scan_result_for_ssid, console_scan_cache_get and
+ * ap_from_scan_result moved to rewair_wifi_scan.c (Phase 2 Task 10, pure
+ * move). Declarations now come from rewair_wifi_scan.h. */
 
-static int parse_wifi_security( const char* text, wiced_security_t* security )
-{
-    if ( cstr_eq( text, "open" ) )
-    {
-        *security = WICED_SECURITY_OPEN;
-        return 1;
-    }
-    if ( cstr_eq( text, "wpa" ) || cstr_eq( text, "wpa-mixed" ) )
-    {
-        *security = WICED_SECURITY_WPA_MIXED_PSK;
-        return 1;
-    }
-    if ( cstr_eq( text, "wpa2" ) || cstr_eq( text, "wpa2-mixed" ) )
-    {
-        *security = WICED_SECURITY_WPA2_MIXED_PSK;
-        return 1;
-    }
-    if ( cstr_eq( text, "wpa2-aes" ) )
-    {
-        *security = WICED_SECURITY_WPA2_AES_PSK;
-        return 1;
-    }
-    if ( cstr_eq( text, "wpa2-tkip" ) )
-    {
-        *security = WICED_SECURITY_WPA2_TKIP_PSK;
-        return 1;
-    }
-    if ( cstr_eq( text, "wpa-aes" ) )
-    {
-        *security = WICED_SECURITY_WPA_AES_PSK;
-        return 1;
-    }
-    if ( cstr_eq( text, "wpa-tkip" ) )
-    {
-        *security = WICED_SECURITY_WPA_TKIP_PSK;
-        return 1;
-    }
-    return 0;
-}
-
-/* Was static; linkage changed to external (Phase 2 Task 9) so
- * rewair_wifi_dct.c's moved functions can call it. Body unchanged. */
-const char* wifi_result_name( wiced_result_t result )
-{
-    switch ( result )
-    {
-        case WICED_SUCCESS:
-            return "success";
-        case WICED_TIMEOUT:
-            return "timeout";
-        case WICED_BADARG:
-            return "badarg";
-        case WICED_NOTUP:
-            return "not-up";
-        case WICED_NOT_FOUND:
-            return "not-found";
-        case WICED_NO_STORED_AP_IN_DCT:
-            return "no-stored-ap";
-        case WICED_STA_JOIN_FAILED:
-            return "sta-join-failed";
-        case WICED_WWD_NOT_AUTHENTICATED:
-            return "not-authenticated";
-        case WICED_WWD_INVALID_KEY:
-            return "invalid-key";
-        case WICED_WWD_CONNECTION_LOST:
-            return "connection-lost";
-        default:
-            return "unknown";
-    }
-}
-
-const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text )
-{
-    const wiced_scan_result_t* best = NULL;
-    uint32_t i;
-
-    for ( i = 0u; i < console_scan_cache_count; i++ )
-    {
-        const wiced_scan_result_t* record = &console_scan_cache[i];
-        if ( ssid_eq_text( &record->SSID, ssid_text ) == 0 )
-        {
-            continue;
-        }
-
-        if ( best == NULL || record->signal_strength > best->signal_strength )
-        {
-            best = record;
-        }
-    }
-
-    return best;
-}
-
-const wiced_scan_result_t* console_scan_cache_get( uint32_t index )
-{
-    if ( index >= console_scan_cache_count )
-    {
-        return NULL;
-    }
-    return &console_scan_cache[index];
-}
-
-static void ap_from_scan_result( wiced_ap_info_t* ap, const wiced_scan_result_t* scan )
-{
-    memset( ap, 0, sizeof( *ap ) );
-    ap->SSID = scan->SSID;
-    ap->BSSID = scan->BSSID;
-    ap->signal_strength = scan->signal_strength;
-    ap->max_data_rate = scan->max_data_rate;
-    ap->bss_type = scan->bss_type;
-    ap->security = scan->security;
-    ap->channel = scan->channel;
-    ap->band = scan->band;
-}
-
-static void wifi_print_status( void )
+/* Was static; linkage changed to external (Phase 2 Task 10) so
+ * rewair_wifi_join.c's moved wifi_join_command_ex can call it (declared in
+ * rewair_wifi_join.h; STAYS here -- pure wiced link-state printing, its two
+ * other call sites, the console "net" command and network_thread_main,
+ * both stay). Body unchanged. */
+void wifi_print_status( void )
 {
     wiced_ip_address_t ip;
     wiced_ip_address_t gateway;
@@ -508,369 +373,22 @@ static void wifi_print_status( void )
     }
 }
 
-static wiced_result_t console_scan_result_handler( wiced_scan_handler_result_t* malloced_scan_result )
-{
-    if ( malloced_scan_result != NULL )
-    {
-        malloc_transfer_to_curr_thread( malloced_scan_result );
-
-        if ( malloced_scan_result->status == WICED_SCAN_INCOMPLETE )
-        {
-            wiced_scan_result_t* record = &malloced_scan_result->ap_details;
-            uint32_t index = console_scan_count++;
-
-            if ( console_scan_cache_count < CONSOLE_SCAN_CACHE_MAX )
-            {
-                memcpy( &console_scan_cache[console_scan_cache_count], record, sizeof( console_scan_cache[0] ) );
-                index = console_scan_cache_count;
-                console_scan_cache_count++;
-            }
-
-            printf( "[scan] %2lu rssi=%4d ch=%2u sec=%-11s ssid=\"",
-                    (unsigned long)index,
-                    (int)record->signal_strength,
-                    (unsigned int)record->channel,
-                    wifi_security_name( record->security ) );
-            print_ssid( &record->SSID );
-            printf( "\" bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                    record->BSSID.octet[0],
-                    record->BSSID.octet[1],
-                    record->BSSID.octet[2],
-                    record->BSSID.octet[3],
-                    record->BSSID.octet[4],
-                    record->BSSID.octet[5] );
-        }
-        else
-        {
-            printf( "[scan] complete results=%lu\n", (unsigned long)console_scan_count );
-
-            if ( scan_in_progress != 0u )
-            {
-                scan_in_progress = 0u;
-                wiced_rtos_set_semaphore( &scan_done_semaphore );
-            }
-            scan_busy = 0u;
-        }
-
-        free( malloced_scan_result );
-    }
-
-    return WICED_SUCCESS;
-}
-
-static void wifi_scan_start( void )
-{
-    wiced_result_t result;
-
-    if ( scan_busy != 0u )
-    {
-        printf( "[scan] busy, try again\n" );
-        return;
-    }
-    scan_busy = 1u;
-
-    console_scan_count = 0u;
-    console_scan_cache_count = 0u;
-    memset( console_scan_cache, 0, sizeof( console_scan_cache ) );
-    printf( "[scan] starting\n" );
-    result = wiced_wifi_scan_networks( console_scan_result_handler, NULL );
-    if ( result != WICED_SUCCESS )
-    {
-        printf( "[scan] failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
-        scan_busy = 0u;
-    }
-}
-
-uint32_t sensor_scan_blocking( void )
-{
-    if ( scan_semaphore_inited == 0u )
-    {
-        wiced_rtos_init_semaphore( &scan_done_semaphore );
-        scan_semaphore_inited = 1u;
-    }
-
-    if ( scan_busy != 0u )
-    {
-        /* Console "scan" already owns the cache -- return the current (possibly
-         * stale) results rather than clobbering them; see scan_busy comment above. */
-        return console_scan_cache_count;
-    }
-    scan_busy = 1u;
-
-    /* Drain any semaphore signal left over from a prior scan that timed out
-     * after its completion callback finally landed -- otherwise this scan's
-     * wiced_rtos_get_semaphore below would return immediately on stale state. */
-    while ( wiced_rtos_get_semaphore( &scan_done_semaphore, 0u ) == WICED_SUCCESS )
-    {
-    }
-
-    console_scan_count = 0u;
-    console_scan_cache_count = 0u;
-    memset( console_scan_cache, 0, sizeof( console_scan_cache ) );
-    scan_in_progress = 1u;
-    if ( wiced_wifi_scan_networks( console_scan_result_handler, NULL ) != WICED_SUCCESS )
-    {
-        scan_in_progress = 0u;
-        scan_busy = 0u;
-        return 0u;
-    }
-    if ( wiced_rtos_get_semaphore( &scan_done_semaphore, 6000u ) != WICED_SUCCESS )
-    {
-        /* Timed out: clear scan_in_progress so a late completion callback does
-         * not pre-signal the semaphore for the NEXT scan, and release the
-         * busy guard so a subsequent scan is not blocked forever. On success,
-         * console_scan_result_handler's completion branch already cleared
-         * scan_busy. */
-        scan_in_progress = 0u;
-        scan_busy = 0u;
-        return console_scan_cache_count;
-    }
-    return console_scan_cache_count;
-}
+/* console_scan_result_handler, wifi_scan_start and sensor_scan_blocking
+ * moved to rewair_wifi_scan.c (Phase 2 Task 10, pure move; the handler
+ * stayed static -- both of its callers moved with it). */
 
 /* wifi_dct_has_stored_ap, wifi_dct_saved_count, wifi_print_saved_credentials,
  * wifi_clear_stored_credentials, wifi_store_ap_credentials moved to
  * rewair_wifi_dct.c (Phase 2 Task 9, pure move). Declarations now come from
  * rewair_wifi_dct.h. */
 
-wiced_result_t wifi_join_command_ex( const char* ssid_text, const char* pass_text,
-                                            wiced_security_t security, const wiced_scan_result_t* scan,
-                                            int force_security, int store_to_dct,
-                                            wiced_ap_info_t* joined_ap_out, char joined_key_out[64],
-                                            uint32_t* joined_key_len_out )
-{
-    wiced_ap_info_t ap;
-    char security_key[64];
-    uint32_t ssid_len = scan == NULL ? cstr_len( ssid_text ) : scan->SSID.length;
-    uint32_t pass_len = cstr_len( pass_text );
-    wiced_result_t result;
-
-    wifi_join_in_progress = 1u;
-
-    if ( ssid_len == 0u || ssid_len > SSID_NAME_SIZE )
-    {
-        printf( "[wifi] bad SSID length=%lu\n", (unsigned long)ssid_len );
-        wifi_join_in_progress = 0u;
-        return WICED_BADARG;
-    }
-
-    if ( security != WICED_SECURITY_OPEN && pass_len > 63u )
-    {
-        printf( "[wifi] passphrase too long length=%lu\n", (unsigned long)pass_len );
-        wifi_join_in_progress = 0u;
-        return WICED_BADARG;
-    }
-
-    memset( &ap, 0, sizeof( ap ) );
-    memset( security_key, 0, sizeof( security_key ) );
-    if ( scan != NULL )
-    {
-        ap_from_scan_result( &ap, scan );
-        if ( force_security == 0 )
-        {
-            security = ap.security;
-        }
-        else
-        {
-            ap.security = security;
-        }
-    }
-    else
-    {
-        ap.SSID.length = ssid_len;
-        memcpy( ap.SSID.value, ssid_text, ssid_len );
-        ap.bss_type = WICED_BSS_TYPE_INFRASTRUCTURE;
-        ap.security = security;
-        ap.band = WICED_802_11_BAND_2_4GHZ;
-    }
-
-    if ( security != WICED_SECURITY_OPEN )
-    {
-        memcpy( security_key, pass_text, pass_len );
-    }
-    else
-    {
-        pass_len = 0u;
-    }
-
-    printf( "[wifi] joining \"" );
-    print_ssid( &ap.SSID );
-    printf( "\" security=%s key_len=%lu", wifi_security_name( security ), (unsigned long)pass_len );
-    if ( scan != NULL )
-    {
-        printf( " ch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x",
-                (unsigned int)ap.channel,
-                ap.BSSID.octet[0],
-                ap.BSSID.octet[1],
-                ap.BSSID.octet[2],
-                ap.BSSID.octet[3],
-                ap.BSSID.octet[4],
-                ap.BSSID.octet[5] );
-    }
-    printf( "\n" );
-
-    if ( wiced_network_is_up( WICED_STA_INTERFACE ) == WICED_TRUE )
-    {
-        wiced_network_down( WICED_STA_INTERFACE );
-    }
-    else
-    {
-        wiced_leave_ap( WICED_STA_INTERFACE );
-    }
-
-    result = wiced_join_ap_specific( &ap, (uint8_t)pass_len, security_key );
-    if ( result != WICED_SUCCESS )
-    {
-        printf( "[wifi] join failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
-        wifi_join_in_progress = 0u;
-        return result;
-    }
-
-    printf( "[wifi] joined; starting DHCP\n" );
-    result = wiced_ip_up( WICED_STA_INTERFACE, WICED_USE_EXTERNAL_DHCP_SERVER, NULL );
-    if ( result != WICED_SUCCESS )
-    {
-        printf( "[wifi] DHCP failed result=%d (%s)\n", (int)result, wifi_result_name( result ) );
-        wiced_leave_ap( WICED_STA_INTERFACE );
-        wifi_join_in_progress = 0u;
-        return result;
-    }
-
-    wifi_print_status( );
-    if ( store_to_dct != 0 )
-    {
-        wifi_store_ap_credentials( &ap, security_key, pass_len );
-    }
-    if ( joined_ap_out != NULL )
-    {
-        *joined_ap_out = ap;
-    }
-    if ( joined_key_out != NULL )
-    {
-        memcpy( joined_key_out, security_key, sizeof( security_key ) );
-    }
-    if ( joined_key_len_out != NULL )
-    {
-        *joined_key_len_out = pass_len;
-    }
-    wifi_join_in_progress = 0u;
-    network_after_ip_ready( );
-    return WICED_SUCCESS;
-}
-
-static wiced_result_t wifi_join_command( const char* ssid_text, const char* pass_text,
-                                         wiced_security_t security, const wiced_scan_result_t* scan,
-                                         int force_security )
-{
-    return wifi_join_command_ex( ssid_text, pass_text, security, scan, force_security,
-                                 1 /* store_to_dct: preserve legacy console slot-0 behavior */,
-                                 NULL, NULL, NULL );
-}
-
-/* wifi_list_add, wifi_list_remove, wifi_list_reorder, wifi_list_get moved to
- * rewair_wifi_dct.c (Phase 2 Task 9, pure move). Declarations now come from
- * rewair_wifi_dct.h. wifi_join_command_ex above lost its `static` (was
- * called only from wifi_join_command here before this move) so the moved
- * wifi_list_add can still call it. */
-
-static void wifi_join_test_index_command( const char* index_text, const char* pass_text,
-                                          wiced_security_t security, int force_security )
-{
-    const wiced_scan_result_t* scan;
-    wiced_scan_result_t ap;
-    char security_key[64];
-    uint32_t index;
-    uint32_t pass_len = cstr_len( pass_text );
-    wiced_result_t result;
-
-    if ( parse_uint32( index_text, &index ) == 0 )
-    {
-        printf( "[wifi] bad scan index \"%s\"\n", index_text );
-        return;
-    }
-
-    scan = console_scan_cache_get( index );
-    if ( scan == NULL )
-    {
-        printf( "[wifi] no cached scan result %lu; run scan first\n", (unsigned long)index );
-        return;
-    }
-
-    memcpy( &ap, scan, sizeof( ap ) );
-    if ( force_security == 0 )
-    {
-        security = ap.security;
-    }
-    else
-    {
-        ap.security = security;
-    }
-
-    if ( security != WICED_SECURITY_OPEN && pass_len > 63u )
-    {
-        printf( "[wifi] passphrase too long length=%lu\n", (unsigned long)pass_len );
-        return;
-    }
-
-    memset( security_key, 0, sizeof( security_key ) );
-    if ( security != WICED_SECURITY_OPEN )
-    {
-        memcpy( security_key, pass_text, pass_len );
-    }
-    else
-    {
-        pass_len = 0u;
-    }
-
-    printf( "[wifi-test] ssid=\"" );
-    print_ssid( &ap.SSID );
-    printf( "\" security=%s key_len=%lu ch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
-            wifi_security_name( security ),
-            (unsigned long)pass_len,
-            (unsigned int)ap.channel,
-            ap.BSSID.octet[0],
-            ap.BSSID.octet[1],
-            ap.BSSID.octet[2],
-            ap.BSSID.octet[3],
-            ap.BSSID.octet[4],
-            ap.BSSID.octet[5] );
-
-    wiced_network_down( WICED_STA_INTERFACE );
-    wiced_leave_ap( WICED_STA_INTERFACE );
-
-    result = (wiced_result_t)wwd_wifi_join_specific( &ap, (uint8_t*)security_key, (uint8_t)pass_len,
-                                                     NULL, WWD_STA_INTERFACE );
-    printf( "[wifi-test] specific result=%d (%s)\n", (int)result, wifi_result_name( result ) );
-    wwd_wifi_leave( WWD_STA_INTERFACE );
-    wiced_rtos_delay_milliseconds( 250u );
-
-    result = (wiced_result_t)wwd_wifi_join( &ap.SSID, security, (uint8_t*)security_key,
-                                            (uint8_t)pass_len, NULL );
-    printf( "[wifi-test] ssid-only result=%d (%s)\n", (int)result, wifi_result_name( result ) );
-    wwd_wifi_leave( WWD_STA_INTERFACE );
-}
-
-static void wifi_join_index_command( const char* index_text, const char* pass_text,
-                                     wiced_security_t security, int force_security )
-{
-    const wiced_scan_result_t* scan;
-    uint32_t index;
-
-    if ( parse_uint32( index_text, &index ) == 0 )
-    {
-        printf( "[wifi] bad scan index \"%s\"\n", index_text );
-        return;
-    }
-
-    scan = console_scan_cache_get( index );
-    if ( scan == NULL )
-    {
-        printf( "[wifi] no cached scan result %lu; run scan first\n", (unsigned long)index );
-        return;
-    }
-
-    wifi_join_command( (const char*)scan->SSID.value, pass_text, security, scan, force_security );
-}
+/* wifi_join_command_ex, wifi_join_command, wifi_join_test_index_command and
+ * wifi_join_index_command moved to rewair_wifi_join.c (Phase 2 Task 10,
+ * pure move). Declarations now come from rewair_wifi_join.h.
+ * (wifi_list_add, wifi_list_remove, wifi_list_reorder, wifi_list_get
+ * remain in rewair_wifi_dct.c per Task 9; rewair_wifi_dct.c now includes
+ * rewair_wifi_join.h for wifi_join_command_ex instead of its former local
+ * extern declaration.) */
 
 #define SFLASH_CONSOLE_READ_MAX 256u
 
@@ -1203,7 +721,10 @@ static wiced_result_t network_sync_time_once( uint32_t* utc_seconds_out )
     return result;
 }
 
-static void network_after_ip_ready( void )
+/* Was static; linkage changed to external (Phase 2 Task 10) so
+ * rewair_wifi_join.c's moved wifi_join_command_ex can call it (declared in
+ * rewair_wifi_join.h; STAYS here). Body unchanged. */
+void network_after_ip_ready( void )
 {
     wiced_time_t now_ms = 0u;
     uint32_t utc_seconds = 0u;

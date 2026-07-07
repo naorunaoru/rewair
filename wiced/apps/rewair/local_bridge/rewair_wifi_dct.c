@@ -7,21 +7,12 @@
 #include "web_api.h"
 #include "rewair_state.h"
 #include "rewair_fmt.h"
-
-/* provided by local_bridge.c (cluster E: join path, stays there). Only
- * wifi_list_add below calls this -- extern-declared here rather than in a
- * shared header since no other module needs it. Linkage changed from
- * static to external in local_bridge.c to allow this cross-TU call (pure
- * move mandated minimum: the callee's body is untouched). */
-extern wiced_result_t wifi_join_command_ex( const char* ssid_text, const char* pass_text,
-                                             wiced_security_t security, const wiced_scan_result_t* scan,
-                                             int force_security, int store_to_dct,
-                                             wiced_ap_info_t* joined_ap_out, char joined_key_out[64],
-                                             uint32_t* joined_key_len_out );
-
-/* provided by local_bridge.c (console/scan cluster, stays there). */
-extern const char* wifi_security_name( wiced_security_t security );
-extern const char* wifi_result_name( wiced_result_t result );
+/* wifi_join_command_ex now lives in rewair_wifi_join.c and
+ * wifi_security_name / wifi_result_name in rewair_wifi_scan.c (Phase 2
+ * Task 10, pure move) -- Task 9's local extern declarations for them are
+ * replaced by the proper module headers. */
+#include "rewair_wifi_scan.h"
+#include "rewair_wifi_join.h"
 
 /* Guards DCT wifi-section read/write critical sections only; never held
  * across joins, frame sends, or state-cache calls. */
