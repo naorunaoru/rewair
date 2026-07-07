@@ -2,6 +2,7 @@
 
 #include "wiced.h"
 
+#include "http_server.h"
 #include "rewair_version.h"
 #include "rewair_tz.h"
 
@@ -10,6 +11,11 @@
 #define REWAIR_API_CORS_DEV 1   /* ON during phase 1 bring-up; turn off for release */
 
 wiced_result_t rewair_web_api_start( wiced_interface_t interface );
+
+/* Force-closes the TCP connection backing `stream`. Used by web_ui.c when a
+ * response's framing is already unrecoverable (e.g. Content-Length was sent
+ * but a later chunk read failed) -- see web_ui.c's web_ui_serve. */
+void rewair_web_api_disconnect_stream( wiced_http_response_stream_t* stream );
 
 /* provided by local_bridge.c */
 uint32_t                   sensor_scan_blocking( void );

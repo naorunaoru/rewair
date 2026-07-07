@@ -1144,6 +1144,15 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { web_ui_root_handler, NULL } },
 END_OF_HTTP_PAGE_DATABASE( );
 
+/* Lets web_ui.c force-close a stream's socket without needing direct access
+ * to the file-scope http_server instance above (mirrors the explicit
+ * disconnect pattern already used by api_scan_handler/api_networks_handler
+ * in this file for their own unrecoverable-framing cases). */
+void rewair_web_api_disconnect_stream( wiced_http_response_stream_t* stream )
+{
+    wiced_http_server_queue_disconnect_request( &http_server, stream->tcp_stream.socket );
+}
+
 wiced_result_t rewair_web_api_start( wiced_interface_t interface )
 {
     wiced_result_t result;

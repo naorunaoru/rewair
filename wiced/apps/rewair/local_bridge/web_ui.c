@@ -38,16 +38,35 @@ void web_ui_init( void )
         return;
     }
 
-    if ( rewair_uifs_init( &ui_fs, ui_sflash_read_cb, NULL ) == 0 )
-    {
-        ui_fs_valid = 1u;
-        printf( "[webui] image ok, %lu files\n", (unsigned long)ui_fs.file_count );
-    }
-    else
+    if ( rewair_uifs_init( &ui_fs, ui_sflash_read_cb, NULL ) != 0 )
     {
         ui_fs_valid = 0u;
         printf( "[webui] no valid image\n" );
+        return;
     }
+
+    /* Header + table CRC are valid at this point, but rewair_uifs_init()
+     * deliberately does not touch blob data (see rewair_uifs.h) -- a
+     * truncated or partially-flashed image can still pass that check while
+     * serving corrupt bytes. Walk every file in the table (fs.files[] is
+     * fully populated by rewair_uifs_init) and verify its blob CRC via
+     * rewair_uifs_verify_file before trusting the image for serving. */
+    {
+        uint32_t i;
+
+        for ( i = 0u; i < ui_fs.file_count; i++ )
+        {
+            if ( rewair_uifs_verify_file( &ui_fs, &ui_fs.files[i] ) != 0 )
+            {
+                ui_fs_valid = 0u;
+                printf( "[webui] image failed integrity check, file=\"%s\"\n", ui_fs.files[i].path );
+                return;
+            }
+        }
+    }
+
+    ui_fs_valid = 1u;
+    printf( "[webui] image ok, %lu files verified\n", (unsigned long)ui_fs.file_count );
 }
 
 /* Writes a raw response header (status line + headers, no body) for a UI
@@ -168,7 +187,18 @@ static int32_t web_ui_serve( const char* path, const char* content_type,
     {
         return -1;
     }
-    (void)web_ui_stream_file( &f, stream );
+    if ( web_ui_stream_file( &f, stream ) != 0 )
+    {
+        /* The header already promised f.size bytes via Content-Length, but a
+         * chunk read failed partway through the body -- there is no way to
+         * retract or correct that promise on this response. Leaving the
+         * connection open would make the client (and, on keep-alive, the
+         * NEXT request on this same socket) hang waiting for bytes that will
+         * never arrive. Forcing the connection closed is the only clean way
+         * out: the client sees a reset/short read instead of a silent hang. */
+        printf( "[webui] stream read failed mid-response, closing connection\n" );
+        rewair_web_api_disconnect_stream( stream );
+    }
     return 0;
 }
 
