@@ -38,3 +38,4 @@ void           rewair_net_mode_tick( void );          /* called from the 60s net
 wiced_result_t rewair_net_mode_enter_ap( rewair_net_mode_t which );  /* AP_SETUP or AP_FALLBACK */
 wiced_result_t rewair_net_mode_exit_ap_to_sta( void );/* teardown AP; next tick autojoins */
 void           rewair_net_mode_request_sta( void );   /* async: web join handler (Task 5) */
+int            rewair_net_mode_sta_requested( void ); /* pending-request poll for the network loop's fast wakeup (Task 5) */

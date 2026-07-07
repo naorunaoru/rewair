@@ -108,6 +108,11 @@ void rewair_net_mode_request_sta( void )
     sta_requested = 1u;
 }
 
+int rewair_net_mode_sta_requested( void )
+{
+    return sta_requested != 0u ? 1 : 0;
+}
+
 wiced_result_t rewair_net_mode_enter_ap( rewair_net_mode_t which )
 {
     char ssid[33];

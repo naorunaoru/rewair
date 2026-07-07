@@ -11,6 +11,7 @@
 #include "rewair_frames.h"
 #include "rewair_wifi_dct.h"
 #include "rewair_wifi_scan.h"
+#include "rewair_net_mode.h"
 #include "web_ui.h"
 
 #define API_BODY_MAX      1024u
@@ -423,6 +424,27 @@ static int32_t api_join_handler( const char* url, wiced_http_response_stream_t* 
     if ( rewair_req_get_string( body, (uint32_t)len, "pass", pass, sizeof( pass ) ) != 1 )
     {
         pass[0] = '\0';
+    }
+
+    if ( rewair_net_mode_current( ) == NET_MODE_AP_SETUP ||
+         rewair_net_mode_current( ) == NET_MODE_AP_FALLBACK )
+    {
+        /* AP-mode join: store credentials, respond SUCCESS immediately, then flag
+         * the network thread to tear down the AP and autojoin from DCT on its next
+         * tick. We never touch radio/web-server state from this HTTP worker context
+         * (web_api single-control-thread contract): the tick owns all of that. The
+         * success 204 is fully written here BEFORE any teardown, because teardown
+         * runs asynchronously on the network thread. Same success shape as the STA
+         * arm below. */
+        if ( wifi_list_add( ssid, pass ) != WICED_SUCCESS )
+        {
+            api_send_error( stream, HTTP_HEADER_400, "store failed" );
+            return 0;
+        }
+        api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
+        rewair_net_mode_request_sta( );
+        printf( "[net-mode] join stored from ap; switching to sta\n" );
+        return 0;
     }
 
     result = wifi_list_add( ssid, pass );

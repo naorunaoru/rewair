@@ -951,8 +951,21 @@ static void network_thread_main( uint32_t arg )
 
     while ( 1 )
     {
+        uint32_t i;
+
         rewair_net_mode_tick( );
-        wiced_rtos_delay_milliseconds( NETWORK_RETRY_MS );
+        /* Sleep the NETWORK_RETRY_MS cadence in 1 s slices so an async STA request
+         * (web join-from-AP handler sets the flag via rewair_net_mode_request_sta)
+         * is picked up within ~1 s instead of waiting up to the full 60 s. Breaking
+         * early lets the next tick tear down the AP and autojoin promptly. */
+        for ( i = 0u; i < NETWORK_RETRY_MS / 1000u; i++ )
+        {
+            wiced_rtos_delay_milliseconds( 1000u );
+            if ( rewair_net_mode_sta_requested( ) != 0 )
+            {
+                break;
+            }
+        }
     }
 }
 
