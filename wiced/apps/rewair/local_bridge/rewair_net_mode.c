@@ -18,11 +18,19 @@
 
 #define AP_JOIN_ATTEMPTS_BEFORE_FALLBACK 3u
 #define AP_CHANNEL                       6u
+#define AP_SELF_HEAL_TICKS               5u    /* ~5 min at the 60 s network tick */
+#define AP_MAX_ASSOC_CLIENTS             5u    /* soft-AP client-list query capacity */
 
 /* volatile: written only by the network thread (tick/enter/exit), but read
  * cross-thread by HTTP workers via rewair_net_mode_current (Tasks 4/5). */
 static volatile rewair_net_mode_t current_mode = NET_MODE_STA_JOINING;
 static uint32_t            boot_join_failures = 0u;
+/* Counts rewair_net_mode_tick invocations while in AP_FALLBACK, driving the
+ * ~5-min self-heal timer (Task 6). Written only on the network thread (tick /
+ * enter_ap / exit_ap_to_sta), so no volatile. Reset on every AP entry and in
+ * exit_ap_to_sta so a re-entered fallback always starts a fresh 5-tick window
+ * (prevents a stale count from firing self-heal immediately on re-entry). */
+static uint32_t            fallback_ticks = 0u;
 static volatile uint32_t   sta_requested = 0u;
 /* Owns the STA link-history bit moved verbatim out of local_bridge.c's
  * network_thread_main (was `static volatile uint32_t wifi_link_was_up`). */
@@ -163,6 +171,7 @@ wiced_result_t rewair_net_mode_enter_ap( rewair_net_mode_t which )
         rewair_state_set_wifi_ap( ssid, "192.168.0.1", mac_buf, wifi_dct_saved_count( ) );
     }
 
+    fallback_ticks = 0u;
     current_mode = which;
     printf( "[net-mode] ap up ssid=%s ip=192.168.0.1 mode=%s\n", ssid,
             which == NET_MODE_AP_SETUP ? "setup" : "fallback" );
@@ -181,8 +190,32 @@ wiced_result_t rewair_net_mode_exit_ap_to_sta( void )
     wiced_network_down( WICED_AP_INTERFACE );      /* SDK stops internal DHCP server */
     current_mode = NET_MODE_STA_JOINING;
     boot_join_failures = 0u;
+    fallback_ticks = 0u;
     printf( "[net-mode] ap down, sta joining\n" );
     return WICED_SUCCESS;
+}
+
+/* Returns 1 if at least one station is currently associated with our soft-AP, 0
+ * if none. Used by the AP_FALLBACK self-heal (Task 6) to avoid tearing down the
+ * portal while a client is mid-configuration. On query failure we return 1
+ * (assume a client MAY be present) so a transient SDK error defers the self-heal
+ * for one 5-min cycle rather than dropping a live setup session; the WLAN
+ * firmware is necessarily up here (the soft-AP is running), so a persistent
+ * failure is not expected. */
+static int ap_has_associated_client( void )
+{
+    struct
+    {
+        uint32_t    count;
+        wiced_mac_t mac_list[ AP_MAX_ASSOC_CLIENTS ];
+    } client_info;
+
+    client_info.count = AP_MAX_ASSOC_CLIENTS;
+    if ( wiced_wifi_get_associated_client_list( &client_info, sizeof( client_info ) ) != WICED_SUCCESS )
+    {
+        return 1;
+    }
+    return client_info.count != 0u ? 1 : 0;
 }
 
 void rewair_net_mode_tick( void )
@@ -258,8 +291,24 @@ void rewair_net_mode_tick( void )
             return;
 
         case NET_MODE_AP_SETUP:
+            /* Never-configured device: nothing to self-heal to. Stay in the
+             * setup portal until a client stores credentials (Task 5). */
+            return;
+
         case NET_MODE_AP_FALLBACK:
-            /* Task 6 adds self-heal here; nothing yet. */
+            fallback_ticks++;
+            if ( fallback_ticks < AP_SELF_HEAL_TICKS )   /* ~5 min at 60 s/tick */
+            {
+                return;
+            }
+            fallback_ticks = 0u;
+            if ( ap_has_associated_client( ) != 0 )
+            {
+                printf( "[net-mode] self-heal deferred: client on setup ap\n" );
+                return;
+            }
+            printf( "[net-mode] self-heal: retrying sta\n" );
+            rewair_net_mode_exit_ap_to_sta( );
             return;
     }
 }
