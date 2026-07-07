@@ -21,15 +21,11 @@ void rewair_web_api_disconnect_stream( wiced_http_response_stream_t* stream );
 uint32_t                   sensor_scan_blocking( void );
 const wiced_scan_result_t* console_scan_cache_get( uint32_t index );
 const wiced_scan_result_t* find_best_scan_result_for_ssid( const char* ssid_text );
-uint32_t                   wifi_dct_saved_count( void );
 
-/* DCT multi-network list management (Task 8) */
-wiced_result_t wifi_list_add( const char* ssid, const char* pass );
-wiced_result_t wifi_list_remove( const char* ssid );
-wiced_result_t wifi_list_reorder( char order[][33], uint32_t count );
-int            wifi_list_get( uint32_t index, char ssid_out[33], wiced_security_t* sec_out,
-                              int* connected_out );
-wiced_result_t wifi_clear_stored_credentials( void );
+/* Wi-Fi DCT credential/list management (wifi_dct_saved_count, wifi_list_add,
+ * wifi_list_remove, wifi_list_reorder, wifi_list_get, wifi_clear_stored_credentials)
+ * now declared in rewair_wifi_dct.h (Phase 2 Task 9, pure move out of
+ * local_bridge.c). web_api.c includes rewair_wifi_dct.h directly for these. */
 
 /* sensor/display + manual time control, time-zone rule application, and
  * time-context push now declared in rewair_frames.h (Phase 2 Task 8,

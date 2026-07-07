@@ -12,6 +12,7 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_score.c \
                    rewair_frame_rx.c \
                    rewair_frames.c \
+                   rewair_wifi_dct.c \
                    jsmn.c \
                    web_api.c \
                    web_ui.c \
