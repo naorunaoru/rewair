@@ -34,6 +34,14 @@ wiced_result_t wifi_store_ap_credentials( const wiced_ap_info_t* ap,
  * (still used by the console "join" path), which wipes the whole list and writes
  * slot 0 only. */
 wiced_result_t wifi_list_add( const char* ssid, const char* pass );
+/* AP-mode no-probe variant of wifi_list_add: persists to the same
+ * find-existing-or-first-free slot WITHOUT joining first. Security/BSSID/channel
+ * come from the scan cache when the SSID is present there (the portal UI's
+ * /api/scan guarantees a recent cache), else security is guessed from the
+ * password with zeroed BSSID/channel (SDK autojoin falls back to join-by-SSID,
+ * so a zeroed entry still joins). Used by the AP arm of /api/join, which must
+ * not bring the STA interface up while the setup AP is running. */
+wiced_result_t wifi_list_store( const char* ssid, const char* pass );
 wiced_result_t wifi_list_remove( const char* ssid );
 wiced_result_t wifi_list_reorder( char order[][33], uint32_t count );
 int            wifi_list_get( uint32_t index, char ssid_out[33], wiced_security_t* sec_out,

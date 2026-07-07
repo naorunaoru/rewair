@@ -429,14 +429,16 @@ static int32_t api_join_handler( const char* url, wiced_http_response_stream_t* 
     if ( rewair_net_mode_current( ) == NET_MODE_AP_SETUP ||
          rewair_net_mode_current( ) == NET_MODE_AP_FALLBACK )
     {
-        /* AP-mode join: store credentials, respond SUCCESS immediately, then flag
+        /* AP-mode join: store credentials (wifi_list_store -- no join probe, so
+         * the STA interface never comes up while the AP is running and the HTTP
+         * worker never blocks on a join), respond SUCCESS immediately, then flag
          * the network thread to tear down the AP and autojoin from DCT on its next
          * tick. We never touch radio/web-server state from this HTTP worker context
          * (web_api single-control-thread contract): the tick owns all of that. The
          * success 204 is fully written here BEFORE any teardown, because teardown
          * runs asynchronously on the network thread. Same success shape as the STA
          * arm below. */
-        if ( wifi_list_add( ssid, pass ) != WICED_SUCCESS )
+        if ( wifi_list_store( ssid, pass ) != WICED_SUCCESS )
         {
             api_send_error( stream, HTTP_HEADER_400, "store failed" );
             return 0;
