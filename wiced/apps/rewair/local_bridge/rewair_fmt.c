@@ -1,5 +1,7 @@
 /* Generic string/parse/format helpers, lifted verbatim out of local_bridge.c
- * (Phase 2 Task 6, pure move). See rewair_fmt.h for the wiced-type note. */
+ * (Phase 2 Task 6, pure move). See rewair_fmt.h for the wiced-type note.
+ * Phase 2 Task 7: the wiced-typed function bodies below are guarded with
+ * `#ifndef REWAIR_HOST_BUILD` -- see rewair_fmt.h for why. */
 
 #include <string.h>
 #include <stdio.h>
@@ -63,6 +65,7 @@ int parse_uint32( const char* text, uint32_t* out )
     return 1;
 }
 
+#ifndef REWAIR_HOST_BUILD
 void print_ipv4( const wiced_ip_address_t* address )
 {
     uint32_t ipv4 = GET_IPV4_ADDRESS( *address );
@@ -109,6 +112,7 @@ int ssid_eq_text( const wiced_ssid_t* ssid, const char* text )
     }
     return memcmp( ssid->value, text, length ) == 0;
 }
+#endif
 
 /* Compares two plain NUL-terminated SSID strings (e.g. rewair_status_t.ssid
  * against a request's ssid), unlike ssid_eq_text which compares against a

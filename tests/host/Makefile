@@ -2,7 +2,7 @@ CC     ?= cc
 SRCDIR := ../../wiced/apps/rewair/local_bridge
 CFLAGS := -std=c99 -Wall -Wextra -Werror -I$(SRCDIR) -DJSMN_PARENT_LINKS
 
-TESTS := test_drops test_tz test_req test_status test_uifs test_walltime
+TESTS := test_drops test_tz test_req test_status test_uifs test_walltime test_score
 
 RWFS_FIXTURE := /tmp/test_uifs_fixture.rwfs
 
@@ -27,6 +27,9 @@ test_uifs: test_uifs.c $(SRCDIR)/rewair_uifs.c
 
 test_walltime: test_walltime.c $(SRCDIR)/rewair_walltime.c
 	$(CC) $(CFLAGS) -o $@ $^ && ./$@
+
+test_score: test_score.c $(SRCDIR)/rewair_score.c $(SRCDIR)/rewair_fmt.c
+	$(CC) $(CFLAGS) -DREWAIR_HOST_BUILD -o $@ $^ && ./$@
 
 clean:
 	rm -f $(TESTS) $(RWFS_FIXTURE)

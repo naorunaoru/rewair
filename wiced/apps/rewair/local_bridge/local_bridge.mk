@@ -9,6 +9,7 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_uifs.c \
                    rewair_fmt.c \
                    rewair_walltime.c \
+                   rewair_score.c \
                    jsmn.c \
                    web_api.c \
                    web_ui.c \
