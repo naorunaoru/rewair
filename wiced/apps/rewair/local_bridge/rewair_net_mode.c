@@ -13,6 +13,7 @@
 #include "rewair_wifi_join.h"
 #include "rewair_wifi_scan.h"
 #include "web_api.h"
+#include "web_ui.h"
 #include "dns_redirect.h"
 
 #define AP_JOIN_ATTEMPTS_BEFORE_FALLBACK 3u
@@ -39,12 +40,6 @@ static const wiced_ip_setting_t ap_ip_settings =
     INITIALISER_IPV4_ADDRESS( .netmask,    MAKE_IPV4_ADDRESS( 255, 255, 255, 0 ) ),
     INITIALISER_IPV4_ADDRESS( .gateway,    MAKE_IPV4_ADDRESS( 192, 168, 0, 1 ) ),
 };
-
-/* replaced by web_ui.h in Task 4 */
-static void web_ui_set_captive( uint8_t on )
-{
-    ( void ) on;
-}
 
 static void ap_ssid_build( char out[33] )
 {

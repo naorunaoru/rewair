@@ -19,6 +19,13 @@
  * entry in api_pages[], or it would swallow all of them. */
 void web_ui_init( void );
 
+/* Toggles captive-portal mode for the root handler. When on, every path that
+ * does not exactly match "/" (or "/?...") is answered with a 302 redirect to
+ * the AP setup gateway instead of a 404, so phone captive-portal probes
+ * (/generate_204, /hotspot-detect.html, ...) open the setup UI. Set by
+ * rewair_net_mode.c around the AP/STA transition (Task 3/4). */
+void web_ui_set_captive( uint8_t on );
+
 int32_t web_ui_root_handler( const char* url, wiced_http_response_stream_t* stream, void* arg,
                              wiced_http_message_body_t* http_data );
 int32_t web_ui_appjs_handler( const char* url, wiced_http_response_stream_t* stream, void* arg,
