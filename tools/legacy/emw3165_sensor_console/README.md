@@ -1,5 +1,8 @@
 # EMW3165 F411 Sensor Console
 
+Legacy: WICED-free F103 isolation console, superseded for daily use by the
+local_bridge console + web API; kept for isolating F103-vs-WICED questions.
+
 Tiny bare-metal STM32F411 firmware for the Awair EMW3165 module.
 
 It does not start WICED or Wi-Fi. It only:
@@ -33,7 +36,7 @@ These match the stock WICED platform table:
 ## Build
 
 ```sh
-make -C tools/emw3165_sensor_console
+make -C tools/legacy/emw3165_sensor_console
 ```
 
 Outputs:
@@ -53,27 +56,22 @@ probe-rs download \
   --speed 950 \
   --non-interactive \
   --verify \
-  tools/emw3165_sensor_console/build/emw3165_sensor_console.elf
+  tools/legacy/emw3165_sensor_console/build/emw3165_sensor_console.elf
 ```
 
 or:
 
 ```sh
-tools/emw3165_sensor_console/flash_sensor_console.zsh
+tools/legacy/emw3165_sensor_console/flash_sensor_console.zsh
 ```
 
-To restore a full known-good image:
+To restore a full known-good image or just the boot sector, see
+`tools/recovery/` (the restore scripts moved there since they are the
+safety-critical path back to stock firmware, not specific to this console):
 
 ```sh
-IMAGE=/path/to/known-good.bin tools/emw3165_sensor_console/restore_stock_f411.zsh
-```
-
-If the stock DCT/app sectors are still intact and only this tiny console image
-was flashed, restoring just the first 16 KiB boot sector should be enough to
-boot the original WICED application again:
-
-```sh
-IMAGE=/path/to/known-good-boot-sector.bin tools/emw3165_sensor_console/restore_stock_boot_sector.zsh
+IMAGE=/path/to/known-good.bin tools/recovery/restore_stock_f411.zsh
+IMAGE=/path/to/known-good-boot-sector.bin tools/recovery/restore_stock_boot_sector.zsh
 ```
 
 ## Console Commands

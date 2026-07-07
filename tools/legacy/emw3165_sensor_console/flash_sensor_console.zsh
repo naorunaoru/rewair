@@ -3,8 +3,8 @@ set -euo pipefail
 
 CHIP="${CHIP:-STM32F411CE}"
 SPEED="${SPEED:-950}"
-repo_root="${0:A:h:h:h}"
-ELF="${ELF:-$repo_root/tools/emw3165_sensor_console/build/emw3165_sensor_console.elf}"
+script_dir="${0:A:h}"
+ELF="${ELF:-$script_dir/build/emw3165_sensor_console.elf}"
 
 probe-rs download \
   --chip "$CHIP" \

@@ -19,8 +19,10 @@ What's inside of the Element?
 - `scripts`: wrappers for syncing into the external WICED SDK, building, and
   flashing.
 - `tools/f103_debug`: SWD/GDB helpers for F103-side protocol tracing.
-- `tools/emw3165_sensor_console`: small bare-metal F411 fallback console used
-  before WICED networking was working.
+- `tools/legacy/emw3165_sensor_console`: small bare-metal F411 fallback
+  console used before WICED networking was working.
+- `tools/recovery`: scripts to restore stock F411 firmware if an
+  experimental flash leaves the module unable to boot.
 - `docs`: status and compatibility notes.
 
 Generated build output, local lab artifacts, and the WICED SDK are intentionally
