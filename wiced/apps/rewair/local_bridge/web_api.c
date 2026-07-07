@@ -434,16 +434,18 @@ static int32_t api_join_handler( const char* url, wiced_http_response_stream_t* 
          * worker never blocks on a join), respond SUCCESS immediately, then flag
          * the network thread to tear down the AP and autojoin from DCT on its next
          * tick. We never touch radio/web-server state from this HTTP worker context
-         * (web_api single-control-thread contract): the tick owns all of that. The
-         * success 204 is fully written here BEFORE any teardown, because teardown
-         * runs asynchronously on the network thread. Same success shape as the STA
-         * arm below. */
+         * (web_api single-control-thread contract): the tick owns all of that.
+         * The explicit flush below pushes the 204 onto the wire BEFORE the switch
+         * is armed (api_send only buffers; the daemon's deferred flush could lose
+         * a scheduling race against the tick's teardown) -- same response-then-act
+         * pattern as the reset handler. Same success shape as the STA arm below. */
         if ( wifi_list_store( ssid, pass ) != WICED_SUCCESS )
         {
             api_send_error( stream, HTTP_HEADER_400, "store failed" );
             return 0;
         }
         api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
+        wiced_http_response_stream_flush( stream );
         rewair_net_mode_request_sta( );
         printf( "[net-mode] join stored from ap; switching to sta\n" );
         return 0;
