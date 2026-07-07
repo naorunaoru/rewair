@@ -6,20 +6,39 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
 ## Rewair Repo Map
 
 - `wiced/apps/rewair/local_bridge`: current WICED app. It brings up Wi-Fi,
-  persists credentials in the standard WICED DCT, syncs time, and speaks the
-  F103 UART protocol.
+  persists credentials (including a multi-network saved-AP list) in the
+  standard WICED DCT, syncs time, speaks the F103 UART protocol, and serves
+  the web API and web UI over HTTP. Split into small single-purpose modules:
+  `local_bridge.c` (entry point, sensor-UART ISR/reset handling),
+  `rewair_state` (live status cache + SSE notification hook),
+  `rewair_settings`, `rewair_tz` (POSIX-TZ), `rewair_frames`/`rewair_frame_rx`
+  (F103 frame codec), `rewair_wifi_dct`/`rewair_wifi_scan`/`rewair_wifi_join`,
+  `rewair_console`, `rewair_score`, `rewair_walltime`, `rewair_json` (with
+  vendored `jsmn.c`/`jsmn.h`), `rewair_drops`, `rewair_uifs` (RWFS reader for
+  the external-sflash-hosted UI image), and `web_api.c`/`web_ui.c` (HTTP
+  routes and UI serving).
 - `wiced/platforms/AWAIR`: Awair/EMW3165 platform port and pin map used by the
-  WICED SDK build.
+  WICED SDK build, including the external SPI flash pin mapping (see
+  [External SPI Flash](#external-spi-flash) below).
+- `webui/`: the web UI (Preact + htm, built with Vite/npm), packed into an
+  RWFS image (`webui/scripts/pack-rwfs.mjs`) for flashing to external sflash.
+- `tests/host/`: 7 host-buildable test suites covering the WICED-independent
+  modules above.
 - `scripts/sync_to_wiced.zsh`: copies the tracked app and platform files into
   the external WICED SDK tree.
 - `scripts/build_local_bridge.zsh`: syncs and builds
   `rewair.local_bridge-AWAIR-FreeRTOS-LwIP-SDIO`.
 - `scripts/flash_local_bridge_probe_rs.zsh`: flashes the built image over SWD
   while preserving DCT by default.
-- `tools/emw3165_sensor_console`: bare-metal fallback console for checking the
-  F103 protocol without the WICED stack.
+- `scripts/flash_sflash_openocd.zsh` / `scripts/flash_webui.zsh`: write raw
+  images (and specifically the built web UI) to the external SPI flash via
+  OpenOCD; see [External SPI Flash](#external-spi-flash).
+- `scripts/api_smoke.zsh`: live-device smoke test covering the web API and UI.
+- `tools/legacy/emw3165_sensor_console`: bare-metal fallback console for
+  checking the F103 protocol without the WICED stack.
 - `tools/f103_debug`: SWD/GDB helpers for inspecting the F103 when the UART link
   stops responding.
+- `tools/recovery`: restore path back to stock F411 firmware.
 - `docs/status.md`: current project state, known-good commands, and next steps.
 
 ## Module Summary
@@ -28,6 +47,42 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
 - Console: USART1, `PB6` TX / `PA10` RX, 115200 8N1.
 - Sensor link: USART2, `PA2` TX / `PA3` RX, 115200 8N1.
 - Sensor reset control appears to be on F411 `PB12`.
+
+## External SPI Flash
+
+The board carries a Macronix MX25L1606E (2 MiB, JEDEC `c2 20 15`) external
+SPI flash on SPI1. Pins (empirically derived, not from a reference
+schematic — the stock BCM943362WCD4 reference platform this WICED port is
+based on wires its own SPI flash differently):
+
+- CS (SSN): `PA15` (`WICED_GPIO_15`), driven as a plain software GPIO,
+  active low.
+- SCK: `PB3` (`WICED_GPIO_16`), AF5.
+- MISO: `PB4` (`WICED_GPIO_17`), AF5.
+- MOSI: `PA7` (`WICED_GPIO_8`), AF5.
+
+`PA15`/`PB3`/`PB4` double as the module's JTAG TDI/TDO/NTRST pins;
+repurposing them for SPI1 is safe on this board because on-target debug is
+SWD-only (`PA13`/`PA14`), so full JTAG is never used. See
+`wiced/platforms/AWAIR/platform.c` and `platform.h` for the driver-level
+detail, and `wiced/platforms/AWAIR/README.txt` for the reverse-engineering
+notes.
+
+Region layout on the 2 MiB device:
+
+- `0x000000`-`0x1BFFFF`: stock WLAN firmware blob and other
+  factory-programmed content. Free for other use if ever needed, but not
+  currently touched by Rewair.
+- `0x1C0000`-`0x1FFFFF` (256 KiB): Rewair's web UI region, holding one packed
+  RWFS image (see `wiced/apps/rewair/local_bridge/rewair_uifs.h` for the
+  on-disk format).
+
+Write tooling: `scripts/flash_sflash_openocd.zsh` (generic image writer, used
+directly or wrapped by `scripts/flash_webui.zsh` for the UI build) drives the
+WICED SDK's `waf_sflash_write` RAM stub over OpenOCD/CMSIS-DAP via
+`scripts/sflash_write_swd.tcl`, then verifies a readback sample against the
+device's `/api/debug/sflash` route. Reads are also available from the serial
+console and via that same dev-gated HTTP route.
 
 ## Active WICED Route
 
@@ -53,9 +108,9 @@ DCT.
 
 ## Fallback Console
 
-The bare-metal sensor console in `tools/emw3165_sensor_console` is a small
-diagnostic firmware. It does not start WICED or Wi-Fi; it only talks to the F103
-over the sensor UART and helps verify protocol behavior.
+The bare-metal sensor console in `tools/legacy/emw3165_sensor_console` is a
+small diagnostic firmware. It does not start WICED or Wi-Fi; it only talks to
+the F103 over the sensor UART and helps verify protocol behavior.
 
 Use it when you need to separate F103 protocol behavior from the WICED UART/DMA
 path.
