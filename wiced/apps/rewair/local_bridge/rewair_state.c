@@ -131,6 +131,28 @@ void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
     notify( );
 }
 
+void rewair_state_set_wifi_ap( const char* ap_ssid, const char* ap_ip, const char* mac,
+                               uint32_t saved_count )
+{
+    /* Called once on AP entry (not a hot loop like rewair_state_set_wifi_sta),
+     * so no change-detection early-out is needed here. */
+    wiced_rtos_lock_mutex( &state_mutex );
+    state.wifi_mode = 1u;
+    copy_str( state.ap_ssid, sizeof( state.ap_ssid ), ap_ssid );
+    copy_str( state.ap_ip, sizeof( state.ap_ip ), ap_ip );
+    copy_str( state.mac, sizeof( state.mac ), mac );
+    state.saved_count = saved_count;
+    state.ssid[0] = '\0';
+    state.rssi = 0;
+    state.ip[0] = '\0';
+    state.gw[0] = '\0';
+    state.dns[0] = '\0';
+    state.connected_s = 0u;
+    state.seq++;
+    wiced_rtos_unlock_mutex( &state_mutex );
+    notify( );
+}
+
 void rewair_state_wifi_drop( void )
 {
     wiced_rtos_lock_mutex( &state_mutex );
