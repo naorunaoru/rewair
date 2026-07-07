@@ -238,10 +238,10 @@ and the web UI being served from sflash (`/`, `/app.js`, gzip headers, 404
 on unknown paths).
 
 Known flake: the split-packet POST-body check (`scripts/check_post_body.py`)
-occasionally fails (roughly 1 run in 7) when it runs immediately after the
-SSE check — a first-run-after-boot timing bias, not a regression. Rerun the
-smoke script once, or run `scripts/check_post_body.py` standalone, if only
-that check fails.
+intermittently times out connecting during full-suite runs (more often when
+suites run back-to-back) but passes reliably standalone. Working theory: dead
+SSE subscriber sockets hold HTTP-daemon connection slots until the next state
+broadcast reaps them. If only that check fails, rerun it standalone to confirm.
 
 ## Web API Summary
 
@@ -262,7 +262,7 @@ requests CORS-"simple") in addition to `application/json`.
 | `/api/time` | POST | Set/override the device's wall-clock time. |
 | `/api/disp` | POST | Set the F103 display mode. |
 | `/api/update` | POST | Firmware OTA — not implemented, returns 501. |
-| `/api/reset` | POST | Clear saved Wi-Fi credentials and settings, then reboot — back into AP setup mode if no credentials remain. |
+| `/api/reset` | POST | Clear all saved Wi-Fi credentials and settings, then reboot into AP setup mode. |
 | `/api/debug/sflash` | GET | Debug route (compiled under `REWAIR_API_CORS_DEV`, currently enabled by default — see `web_api.h`) raw SPI-flash readback for debugging. |
 | `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image in external flash (or a small built-in fallback page for `/` if no image is flashed yet). |
 
