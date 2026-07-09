@@ -1,3 +1,3 @@
 #pragma once
 
-#define REWAIR_FW_VERSION "rewair 0.5.0-dev"
+#define REWAIR_FW_VERSION "rewair 0.6.0-dev"

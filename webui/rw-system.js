@@ -26,7 +26,7 @@ import RewairAPI from './rw-api.js';
         setPhase('done');
         setTimeout(() => { onClose(); refresh(); }, 1800);
       }, (e) => {
-        setErr(e.status === 501 ? 'Firmware update not supported by this device' : e.message);
+        setErr(e.message);
         setPhase('pick');
       });
     };

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "web_api.h"
+#include "rewair_sflash.h"
 #include "rewair_uifs.h"
 
 /* Start of the 256 KB UI region (0x1C0000-0x1FFFFF) reserved on the 2 MiB

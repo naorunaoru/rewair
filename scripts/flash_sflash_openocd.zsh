@@ -10,8 +10,10 @@
 # Env:
 #   REWAIR_IP    device IP for readback verification (default 192.168.1.242)
 #   FORCE=1      allow addr < 0x1C0000 (the UI region we own); refused
-#                otherwise, since 0x000000-0x1BFFFF holds the WLAN firmware
-#                blob and other factory-programmed content.
+#                otherwise, since lower addresses contain OTA staging,
+#                rollback, journal, and other reserved content.
+#   OPENOCD      OpenOCD executable (auto-detected, including an unlinked
+#                Homebrew open-ocd formula)
 #   SDK_DIR      path to the WICED SDK checkout (default ../third_party/wiced-emw3165)
 #   CHIP         probe-rs chip name for the pre/post reset (default STM32F411CE)
 #
@@ -29,6 +31,22 @@ CHIP="${CHIP:-STM32F411CE}"
 SPEED="${SPEED:-950}"
 REWAIR_IP="${REWAIR_IP:-192.168.1.242}"
 FORCE="${FORCE:-0}"
+OPENOCD="${OPENOCD:-}"
+
+if [[ -z "$OPENOCD" ]]; then
+    if command -v openocd > /dev/null 2>&1; then
+        OPENOCD="$(command -v openocd)"
+    elif [[ -x /opt/homebrew/opt/open-ocd/bin/openocd ]]; then
+        OPENOCD="/opt/homebrew/opt/open-ocd/bin/openocd"
+    elif [[ -x /usr/local/opt/open-ocd/bin/openocd ]]; then
+        OPENOCD="/usr/local/opt/open-ocd/bin/openocd"
+    fi
+fi
+
+if [[ -z "$OPENOCD" || ! -x "$OPENOCD" ]]; then
+    print -u2 -r -- "OpenOCD not found; install open-ocd or set OPENOCD to its executable"
+    exit 127
+fi
 
 UI_REGION_START=0x1C0000
 
@@ -64,7 +82,7 @@ fi
 
 if (( addr < UI_REGION_START )) && [[ "$FORCE" != "1" ]]; then
     print -u2 -r -- "refusing to write below the UI region (0x$(printf %x $UI_REGION_START)): 0x$(printf %x $addr) is outside it."
-    print -u2 -r -- "0x000000-0x1BFFFF holds the WLAN firmware blob and other factory-programmed content."
+    print -u2 -r -- "0x000000-0x1BFFFF contains OTA staging, rollback, journal, and other reserved content."
     print -u2 -r -- "Set FORCE=1 to override."
     exit 1
 fi
@@ -91,7 +109,7 @@ if pgrep -f "probe-rs" > /dev/null 2>&1; then
     exit 1
 fi
 
-openocd \
+"$OPENOCD" \
     -f interface/cmsis-dap.cfg \
     -c "transport select swd" \
     -f target/stm32f4x.cfg \

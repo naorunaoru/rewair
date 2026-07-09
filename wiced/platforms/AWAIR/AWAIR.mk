@@ -44,13 +44,23 @@ GLOBAL_INCLUDES  := .
 # Global defines
 # HSE_VALUE = STM32 crystal frequency = 26MHz (needed to make UART work correctly)
 GLOBAL_DEFINES += HSE_VALUE=26000000
+# Keep SysTick running in idle. The WICED 3.3.1 tickless hook can remain in
+# platform_power_down_hook instead of waking after short sleeps on this board,
+# eventually tripping the hardware watchdog. WICED_DISABLE_MCU_POWERSAVE still
+# uses the ordinary WFI idle hook; it only disables the fragile tickless path.
+GLOBAL_DEFINES += WICED_DISABLE_MCU_POWERSAVE
 GLOBAL_DEFINES += $$(if $$(NO_CRLF_STDIO_REPLACEMENT),,CRLF_STDIO_REPLACEMENT)
 
 # Components
 $(NAME)_COMPONENTS += drivers/spi_flash
 
 # Source files
-$(NAME)_SOURCES := platform.c
+$(NAME)_SOURCES := platform.c \
+                   rewair_ota_common.c
+
+ifeq ($(APP),bootloader)
+$(NAME)_SOURCES += rewair_ota_boot.c
+endif
 
 # WICED APPS
 # APP0 and FILESYSTEM_IMAGE are reserved main app and resources file system

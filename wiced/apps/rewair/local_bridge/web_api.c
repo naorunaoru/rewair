@@ -12,6 +12,8 @@
 #include "rewair_wifi_dct.h"
 #include "rewair_wifi_scan.h"
 #include "rewair_net_mode.h"
+#include "rewair_ota.h"
+#include "rewair_sflash.h"
 #include "web_ui.h"
 
 #define API_BODY_MAX      1024u
@@ -19,14 +21,9 @@
 #define API_WORKER_STACK  6000u
 #define API_MAX_SAVED_NETWORKS CONFIG_AP_LIST_SIZE
 
-#define SSE_MAX_SUBS       2u
-#define SSE_HEARTBEAT_MS   15000u
-#define SSE_THREAD_STACK   4096u
-
 static wiced_http_server_t http_server;
 static uint32_t            server_started = 0u;
 static uint8_t             server_init_done = 0u;
-static volatile uint8_t    sse_shutting_down = 0u;
 
 #ifdef REWAIR_API_CORS_DEV
 #define API_CORS_HEADER "Access-Control-Allow-Origin: *\r\n"
@@ -787,12 +784,264 @@ static int32_t api_disp_handler( const char* url, wiced_http_response_stream_t* 
     return 0;
 }
 
-/* ---- POST /api/update ---- */
+static int api_query_value( const char* url, const char* name, const char** value,
+                            uint32_t* value_len )
+{
+    const char* p = strchr( url, '?' );
+    uint32_t name_len = (uint32_t)strlen( name );
+
+    if ( p == NULL )
+    {
+        return 0;
+    }
+    p++;
+    while ( *p != '\0' )
+    {
+        const char* end = strchr( p, '&' );
+        const char* eq = strchr( p, '=' );
+
+        if ( end == NULL )
+        {
+            end = p + strlen( p );
+        }
+        if ( eq != NULL && eq < end && (uint32_t)( eq - p ) == name_len &&
+             strncmp( p, name, name_len ) == 0 )
+        {
+            *value = eq + 1;
+            *value_len = (uint32_t)( end - ( eq + 1 ) );
+            return 1;
+        }
+        if ( *end == '\0' )
+        {
+            break;
+        }
+        p = end + 1;
+    }
+    return 0;
+}
+
+static int api_parse_u32( const char* text, uint32_t len, uint32_t base, uint32_t* out )
+{
+    uint32_t value = 0u;
+    uint32_t i;
+
+    if ( len == 0u || ( base != 10u && base != 16u ) )
+    {
+        return 0;
+    }
+    for ( i = 0u; i < len; i++ )
+    {
+        uint32_t digit;
+
+        if ( text[i] >= '0' && text[i] <= '9' )
+        {
+            digit = (uint32_t)( text[i] - '0' );
+        }
+        else if ( base == 16u && text[i] >= 'a' && text[i] <= 'f' )
+        {
+            digit = (uint32_t)( text[i] - 'a' + 10 );
+        }
+        else if ( base == 16u && text[i] >= 'A' && text[i] <= 'F' )
+        {
+            digit = (uint32_t)( text[i] - 'A' + 10 );
+        }
+        else
+        {
+            return 0;
+        }
+        if ( digit >= base || value > ( 0xffffffffu - digit ) / base )
+        {
+            return 0;
+        }
+        value = value * base + digit;
+    }
+    *out = value;
+    return 1;
+}
+
+static int api_update_receive_chunk( wiced_http_message_body_t* http_data,
+                                     wiced_http_response_stream_t* stream, uint32_t offset )
+{
+    uint32_t have;
+    uint32_t total;
+    uint32_t written = 0u;
+
+    if ( http_data == NULL )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "missing update chunk" );
+        return -1;
+    }
+    have = (uint32_t)http_data->message_data_length;
+    total = have + (uint32_t)http_data->total_message_data_remaining;
+    if ( total == 0u || total > REWAIR_OTA_UPLOAD_CHUNK_MAX )
+    {
+        api_send_error( stream, "HTTP/1.1 413 Payload Too Large", "invalid update chunk size" );
+        return -1;
+    }
+    if ( have != 0u )
+    {
+        if ( http_data->data == NULL ||
+             rewair_ota_upload_chunk( offset, http_data->data, have ) != WICED_SUCCESS )
+        {
+            api_send_error( stream, HTTP_HEADER_400, "unexpected update chunk" );
+            return -1;
+        }
+        written = have;
+    }
+
+    while ( written < total )
+    {
+        wiced_packet_t* packet = NULL;
+        uint8_t* packet_data;
+        uint16_t fragment_length;
+        uint16_t available_length;
+        uint32_t take;
+
+        if ( wiced_tcp_receive( stream->tcp_stream.socket, &packet, 5000u ) != WICED_SUCCESS ||
+             packet == NULL ||
+             wiced_packet_get_data( packet, 0, &packet_data, &fragment_length,
+                                    &available_length ) != WICED_SUCCESS )
+        {
+            if ( packet != NULL )
+            {
+                wiced_packet_delete( packet );
+            }
+            api_send_error( stream, HTTP_HEADER_400, "incomplete update chunk" );
+            return -1;
+        }
+        take = (uint32_t)fragment_length;
+        if ( take > total - written )
+        {
+            take = total - written;
+        }
+        if ( take == 0u )
+        {
+            wiced_packet_delete( packet );
+            api_send_error( stream, HTTP_HEADER_400, "empty update fragment" );
+            return -1;
+        }
+        if ( rewair_ota_upload_chunk( offset + written, packet_data, take ) != WICED_SUCCESS )
+        {
+            wiced_packet_delete( packet );
+            api_send_error( stream, HTTP_HEADER_500, "failed to stage update chunk" );
+            return -1;
+        }
+        written += take;
+        wiced_packet_delete( packet );
+    }
+    return (int)written;
+}
+
+/* ---- POST /api/update ----
+ * The stock daemon stores Content-Length in uint16_t, so a firmware image is
+ * transferred as sequential <=16 KiB requests. The portal still exposes one
+ * update operation: op=begin invalidates old staging, offset=N appends bytes,
+ * and op=commit verifies flash and arms the bootloader. */
 static int32_t api_update_handler( const char* url, wiced_http_response_stream_t* stream,
                                    void* arg, wiced_http_message_body_t* http_data )
 {
-    (void)url; (void)arg; (void)http_data;
-    api_send_error( stream, "HTTP/1.1 501 Not Implemented", "OTA not supported in this firmware" );
+    const char* value;
+    uint32_t value_len;
+
+    (void)arg;
+    if ( strncmp( url, "/api/update", 11u ) != 0 ||
+         ( url[11] != '\0' && url[11] != '?' ) )
+    {
+        api_send_error( stream, "HTTP/1.1 404 Not Found", "not found" );
+        return 0;
+    }
+    if ( !method_is( http_data, WICED_HTTP_POST_REQUEST ) )
+    {
+        api_send_error( stream, HTTP_HEADER_405, "POST only" );
+        return 0;
+    }
+
+    if ( api_query_value( url, "op", &value, &value_len ) != 0 )
+    {
+        if ( value_len == 5u && strncmp( value, "begin", 5u ) == 0 )
+        {
+            const char* size_text;
+            const char* crc_text;
+            uint32_t size_len;
+            uint32_t crc_len;
+            uint32_t size;
+            uint32_t crc;
+            wiced_result_t result;
+
+            if ( api_query_value( url, "size", &size_text, &size_len ) == 0 ||
+                 api_query_value( url, "crc", &crc_text, &crc_len ) == 0 ||
+                 api_parse_u32( size_text, size_len, 10u, &size ) == 0 ||
+                 api_parse_u32( crc_text, crc_len, 16u, &crc ) == 0 )
+            {
+                api_send_error( stream, HTTP_HEADER_400, "size and crc required" );
+                return 0;
+            }
+            result = rewair_ota_upload_begin( size, crc );
+            if ( result == WICED_ALREADY_INITIALIZED )
+            {
+                api_send_error( stream, "HTTP/1.1 409 Conflict", "update already pending" );
+            }
+            else if ( result == WICED_BADARG )
+            {
+                api_send_error( stream, HTTP_HEADER_400, "invalid firmware size" );
+            }
+            else if ( result != WICED_SUCCESS )
+            {
+                api_send_error( stream, HTTP_HEADER_500, "failed to prepare staging flash" );
+            }
+            else
+            {
+                const char* body = "{\"status\":\"ready\"}";
+                api_send( stream, HTTP_HEADER_200, "application/json", body,
+                          (uint32_t)strlen( body ) );
+            }
+            return 0;
+        }
+        if ( value_len == 6u && strncmp( value, "commit", 6u ) == 0 )
+        {
+            const char* body = "{\"status\":\"staged\",\"reboot\":true}";
+
+            if ( rewair_ota_upload_commit( ) != WICED_SUCCESS )
+            {
+                api_send_error( stream, HTTP_HEADER_400, "firmware verification failed" );
+                return 0;
+            }
+            api_send( stream, HTTP_HEADER_200, "application/json", body,
+                      (uint32_t)strlen( body ) );
+            wiced_http_response_stream_flush( stream );
+            wiced_rtos_delay_milliseconds( 500u );
+            wiced_framework_reboot( );
+            return 0;
+        }
+        api_send_error( stream, HTTP_HEADER_400, "unknown update operation" );
+        return 0;
+    }
+
+    if ( api_query_value( url, "offset", &value, &value_len ) != 0 )
+    {
+        uint32_t offset;
+        int received;
+        char body[64];
+        int n;
+
+        if ( api_parse_u32( value, value_len, 10u, &offset ) == 0 )
+        {
+            api_send_error( stream, HTTP_HEADER_400, "invalid update offset" );
+            return 0;
+        }
+        received = api_update_receive_chunk( http_data, stream, offset );
+        if ( received < 0 )
+        {
+            return 0;
+        }
+        n = snprintf( body, sizeof( body ), "{\"received\":%lu}",
+                      (unsigned long)rewair_ota_upload_received( ) );
+        api_send( stream, HTTP_HEADER_200, "application/json", body,
+                  n > 0 ? (uint32_t)n : 0u );
+        return 0;
+    }
+
+    api_send_error( stream, HTTP_HEADER_400, "update operation required" );
     return 0;
 }
 
@@ -1000,170 +1249,24 @@ static int32_t api_debug_sflash_handler( const char* url, wiced_http_response_st
 
 /* ---- GET /api/events (SSE) ----
  *
- * Concurrency model:
- *  - sse_subs[] is a fixed-size table of live subscriber sockets, guarded by
- *    sse_mutex. Both the broadcaster thread and api_events_handler (running on
- *    an HTTP worker thread) touch it only while holding sse_mutex.
- *  - The broadcaster NEVER holds the state mutex (rewair_state.c's internal
- *    mutex) while writing to a socket: rewair_state_snapshot() copies the
- *    struct out under that mutex and releases it before rewair_json_status()
- *    or sse_broadcast() ever run. So a slow/dead SSE peer can never block a
- *    caller of rewair_state_set_* (which only need the state mutex briefly).
- *  - sse_write_to() uses wiced_tcp_stream_write()/_flush(), which bottom out
- *    in network_tcp_send_packet() -> LwIP netconn_write(..., NETCONN_DONTBLOCK).
- *    That means a write to a dead/unresponsive peer returns an error
- *    immediately (does NOT block for minutes) -- so sse_mutex is never held
- *    across a long stall. Confirmed by reading
- *    WICED/network/LwIP/WICED/tcpip.c:network_tcp_send_packet().
- *  - On a write failure, the broadcaster calls
- *    wiced_http_server_queue_disconnect_request() (async: queues the
- *    teardown to the HTTP daemon's own event thread) and clears the slot
- *    immediately, all still under sse_mutex -- so a second broadcast in the
- *    same pass, or a concurrent api_events_handler() eviction, never sees a
- *    stale non-NULL slot pointing at a socket already headed for teardown.
- *  - Eviction (sse_add_subscriber, when the table is full) also runs under
- *    sse_mutex and uses the same queue_disconnect_request call the daemon
- *    itself uses elsewhere in this file (api_scan_handler /
- *    api_networks_handler) -- so it's consistent with how this codebase
- *    always tears down raw-handler sockets: asynchronously, never a direct
- *    close from this thread.
- *  - Because disconnection is always requested via queue_disconnect_request
- *    (never a direct wiced_tcp_* close from this file), there's no path
- *    where this file's own code races the daemon's disconnect callback on
- *    the *same* socket pointer: once a slot is cleared under sse_mutex, this
- *    file will never write to that socket again, and the daemon owns the
- *    rest of the actual teardown independently. The only residual risk is
- *    the daemon reusing/freeing the wiced_tcp_socket_t memory for a new
- *    accept() before our queued disconnect completes; WICED's HTTP server
- *    processes disconnects on its own event thread serially with accepts,
- *    so this matches the same lifetime assumption api_scan_handler already
- *    relies on. */
-static wiced_tcp_socket_t* sse_subs[SSE_MAX_SUBS];
-static wiced_mutex_t       sse_mutex;
-static wiced_semaphore_t   sse_wake;
-static wiced_thread_t      sse_thread;
-
-static void sse_on_state_change( void )
-{
-    wiced_rtos_set_semaphore( &sse_wake );
-}
-
-static void sse_add_subscriber( wiced_tcp_socket_t* socket )
-{
-    uint32_t i;
-
-    wiced_rtos_lock_mutex( &sse_mutex );
-    if ( sse_shutting_down != 0u )
-    {
-        /* rewair_web_api_stop() already cleared the table; a socket added now
-         * would be closed/freed by wiced_http_server_stop() while the
-         * still-running broadcaster kept a pointer to it (use-after-free).
-         * Refuse the add and hand the socket back to the daemon's own
-         * disconnect path (same call the eviction path below uses). */
-        wiced_rtos_unlock_mutex( &sse_mutex );
-        wiced_http_server_queue_disconnect_request( &http_server, socket );
-        return;
-    }
-    for ( i = 0u; i < SSE_MAX_SUBS; i++ )
-    {
-        if ( sse_subs[i] == NULL )
-        {
-            sse_subs[i] = socket;
-            wiced_rtos_unlock_mutex( &sse_mutex );
-            return;
-        }
-    }
-    /* full: evict slot 0 (oldest), shift, append */
-    printf( "[web] sse table full, evicting oldest subscriber\n" );
-    wiced_http_server_queue_disconnect_request( &http_server, sse_subs[0] );
-    for ( i = 0u; i + 1u < SSE_MAX_SUBS; i++ )
-    {
-        sse_subs[i] = sse_subs[i + 1u];
-    }
-    sse_subs[SSE_MAX_SUBS - 1u] = socket;
-    wiced_rtos_unlock_mutex( &sse_mutex );
-}
-
-/* Own wiced_tcp_stream per write (init/write/flush/deinit) -- this stream is
- * just a thin cursor over the socket's TX packet, so building a fresh one
- * per broadcast keeps each subscriber's framing independent without needing
- * to keep a long-lived stream object per subscriber alongside the socket
- * pointer in sse_subs[]. */
-static int sse_write_to( wiced_tcp_socket_t* socket, const char* data, uint32_t len )
-{
-    wiced_tcp_stream_t s;
-    wiced_result_t result;
-
-    if ( wiced_tcp_stream_init( &s, socket ) != WICED_SUCCESS )
-    {
-        return -1;
-    }
-    result = wiced_tcp_stream_write( &s, data, len );
-    if ( result == WICED_SUCCESS )
-    {
-        result = wiced_tcp_stream_flush( &s );
-    }
-    wiced_tcp_stream_deinit( &s );
-    return result == WICED_SUCCESS ? 0 : -1;
-}
-
-static void sse_broadcast( const char* payload, uint32_t len )
-{
-    uint32_t i;
-
-    wiced_rtos_lock_mutex( &sse_mutex );
-    for ( i = 0u; i < SSE_MAX_SUBS; i++ )
-    {
-        if ( sse_subs[i] != NULL && sse_write_to( sse_subs[i], payload, len ) != 0 )
-        {
-            printf( "[web] sse client %lu gone\n", (unsigned long)i );
-            wiced_http_server_queue_disconnect_request( &http_server, sse_subs[i] );
-            sse_subs[i] = NULL;
-        }
-    }
-    wiced_rtos_unlock_mutex( &sse_mutex );
-}
-
-/* Both the state-change wake and the SSE_HEARTBEAT_MS timeout converge here:
- * every wakeup (spurious or not) takes a fresh snapshot and broadcasts a full
- * `data:` frame. This means a quiet stream (stable rssi, stalled SENS) still
- * delivers a fresh connected_s/rssi every SSE_HEARTBEAT_MS instead of a bare
- * ": ka" comment the UI cannot use -- there is no longer a distinct
- * keepalive-comment path to obsolete/drift from the real payload. */
-static void sse_thread_main( uint32_t arg )
-{
-    static char json[API_STATUS_BUF];
-    static char frame[API_STATUS_BUF + 16u];
-    rewair_status_t st;
-    int len;
-    int n;
-
-    (void)arg;
-    while ( 1 )
-    {
-        (void)wiced_rtos_get_semaphore( &sse_wake, SSE_HEARTBEAT_MS );
-
-        rewair_state_snapshot( &st );
-        rewair_apply_connected_duration( &st );
-        len = rewair_json_status( &st, json, sizeof( json ) );
-        if ( len < 0 )
-        {
-            continue;
-        }
-        n = snprintf( frame, sizeof( frame ), "data: %s\n\n", json );
-        if ( n > 0 )
-        {
-            sse_broadcast( frame, (uint32_t)n );
-        }
-    }
-}
-
+ * The stock WICED HTTP daemon exposes no application disconnect callback and
+ * recycles its fixed socket objects after a peer closes. Retaining a socket
+ * pointer for a conventional long-lived SSE broadcaster can therefore turn
+ * it into a pointer to an unrelated, newer request. A later heartbeat may
+ * write to or disconnect that new request and destabilise the networking
+ * worker.
+ *
+ * Serve one complete event and close instead. EventSource reconnects after
+ * the advertised retry interval, preserving live updates without keeping a
+ * socket pointer beyond this handler's lifetime. */
 static int32_t api_events_handler( const char* url, wiced_http_response_stream_t* stream,
                                    void* arg, wiced_http_message_body_t* http_data )
 {
     static char json[API_STATUS_BUF];
+    static char frame[API_STATUS_BUF + 32u];
     rewair_status_t st;
     int len;
+    int n;
 
     (void)url; (void)arg;
     if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
@@ -1172,25 +1275,25 @@ static int32_t api_events_handler( const char* url, wiced_http_response_stream_t
         return 0;
     }
 
-    {
-        const char* hdr = HTTP_HEADER_200 "\r\n"
-                          "Content-Type: text/event-stream\r\n"
-                          API_CORS_HEADER
-                          "Cache-Control: no-cache\r\n"
-                          "\r\n";
-        wiced_http_response_stream_write( stream, hdr, (uint32_t)strlen( hdr ) );
-    }
     rewair_state_snapshot( &st );
     rewair_apply_connected_duration( &st );
     len = rewair_json_status( &st, json, sizeof( json ) );
-    if ( len > 0 )
+    if ( len < 0 )
     {
-        wiced_http_response_stream_write( stream, "data: ", 6u );
-        wiced_http_response_stream_write( stream, json, (uint32_t)len );
-        wiced_http_response_stream_write( stream, "\n\n", 2u );
+        api_send_error( stream, HTTP_HEADER_500, "status unavailable" );
+        return 0;
     }
+
+    n = snprintf( frame, sizeof( frame ), "data: %s\nretry: 2500\n\n", json );
+    if ( n < 0 || n >= (int)sizeof( frame ) )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "status unavailable" );
+        return 0;
+    }
+
+    api_send( stream, HTTP_HEADER_200, "text/event-stream", frame, (uint32_t)n );
     wiced_http_response_stream_flush( stream );
-    sse_add_subscriber( stream->tcp_stream.socket );
+    wiced_http_server_queue_disconnect_request( &http_server, stream->tcp_stream.socket );
     return 0;
 }
 
@@ -1246,6 +1349,8 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_disp_handler, NULL } },
     { "/api/update",    "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_update_handler, NULL } },
+    { "/api/update",    "application/octet-stream", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_update_handler, NULL } },
     { "/api/reset",     "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_reset_handler, NULL } },
     /* ---- Web UI (Phase 2 Task 5), served from the RWFS image in external
@@ -1287,11 +1392,6 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
     if ( server_init_done == 0u )
     {
         web_ui_init( );
-        wiced_rtos_init_mutex( &sse_mutex );
-        wiced_rtos_init_semaphore( &sse_wake );
-        rewair_state_subscribe( sse_on_state_change );
-        wiced_rtos_create_thread( &sse_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "sse",
-                                  sse_thread_main, SSE_THREAD_STACK, NULL );
         server_init_done = 1u;
     }
 
@@ -1299,7 +1399,6 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
                                       API_WORKER_STACK );
     if ( result == WICED_SUCCESS )
     {
-        sse_shutting_down = 0u;
         server_started = 1u;
         printf( "[web] http server up on port 80\n" );
     }
@@ -1311,34 +1410,21 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
 }
 
 /* Contract: rewair_web_api_start()/rewair_web_api_stop() must only ever be
- * called from a single control thread (the network-mode thread) -- they are
- * not safe to race against each other. sse_shutting_down closes the window
- * where a request entering sse_add_subscriber after the table is cleared
- * below (but before wiced_http_server_stop kills the daemon threads) would
- * re-add a socket that stop() then closes/frees while the still-running
- * broadcaster keeps its pointer (use-after-free). A microscopic window
- * remains where the SDK's drain-less wiced_rtos_delete_worker_thread could
- * delete a worker mid-sse_add_subscriber while it holds sse_mutex, wedging
- * the mutex forever; that is inherent to the SDK's stop and accepted --
- * mode transitions are rare and human-initiated. */
+ * called from the network-mode control thread; the SDK server lifecycle is
+ * not safe to start and stop concurrently. */
 wiced_result_t rewair_web_api_stop( void )
 {
-    uint32_t i;
-
     if ( server_started == 0u )
     {
         return WICED_SUCCESS;
     }
 
-    sse_shutting_down = 1u;
-    wiced_rtos_lock_mutex( &sse_mutex );
-    for ( i = 0u; i < SSE_MAX_SUBS; i++ )
-    {
-        sse_subs[i] = NULL;   /* sockets are owned by the daemon; stop() closes them */
-    }
-    wiced_rtos_unlock_mutex( &sse_mutex );
-
     server_started = 0u;
     printf( "[web] http server stopping\n" );
     return wiced_http_server_stop( &http_server );
+}
+
+uint32_t rewair_web_api_is_started( void )
+{
+    return server_started;
 }
