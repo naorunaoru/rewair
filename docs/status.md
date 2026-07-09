@@ -53,11 +53,24 @@ Date: 2026-07-09.
   idempotent internal-flash copy, and three-attempt trial rollback. It builds
   within both flash regions and has host tests; the bench power-loss gauntlet
   in `docs/ota.md` remains pending.
-- 8 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
+- MQTT 3.1.1 publishing is integrated into the firmware and portal: persisted
+  broker/auth/topic configuration, automatic reconnect, retained JSON sensor
+  state, retained online/offline availability with a last will, and retained
+  Home Assistant discovery for all seven sensor/score entities. The current
+  transport is plaintext TCP for trusted local networks; TLS is not yet
+  included. Bench-verified 2026-07-09 against Mosquitto 2.1.2: a fresh
+  subscriber replayed all nine retained records (availability, state, and
+  seven discovery configs), live `SENS` frames produced state updates, and a
+  controlled F411 reset produced `offline` via the last will followed by an
+  automatic reconnect. Stopping the broker during a live connection also
+  produced `offline`; the web API remained responsive through repeated failed
+  reconnects, then the device restored `online`, state, and all discovery
+  records after the broker restarted.
+- 9 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
   `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
-  `test_ota`), all
+  `test_ota`, `test_mqtt_packet`), all
   passing against a clean `make -C tests/host`.
-- `scripts/api_smoke.zsh`: 20-check smoke test against a live device,
+- `scripts/api_smoke.zsh`: 21-check smoke test against a live device,
   covering both the web API and the sflash-served UI.
 - External SPI flash read/write tooling: `scripts/flash_sflash_openocd.zsh`
   (OpenOCD + WICED sflash-write RAM stub, SWD/CMSIS-DAP, with readback

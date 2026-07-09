@@ -129,6 +129,36 @@ int rewair_req_get_u32( const char* body, uint32_t len, const char* key, uint32_
     return 1;
 }
 
+int rewair_req_get_bool( const char* body, uint32_t len, const char* key, uint8_t* out )
+{
+    jsmntok_t tokens[REQ_MAX_TOKENS];
+    int count = req_tokenize( body, len, tokens, REQ_MAX_TOKENS );
+    int vi;
+    uint32_t value_len;
+
+    if ( count < 0 )
+    {
+        return -1;
+    }
+    vi = find_value( body, tokens, count, key );
+    if ( vi < 0 || tokens[vi].type != JSMN_PRIMITIVE )
+    {
+        return 0;
+    }
+    value_len = (uint32_t)( tokens[vi].end - tokens[vi].start );
+    if ( value_len == 4u && strncmp( body + tokens[vi].start, "true", 4u ) == 0 )
+    {
+        *out = 1u;
+        return 1;
+    }
+    if ( value_len == 5u && strncmp( body + tokens[vi].start, "false", 5u ) == 0 )
+    {
+        *out = 0u;
+        return 1;
+    }
+    return 0;
+}
+
 int rewair_req_get_string_array( const char* body, uint32_t len, const char* key,
                                  char out[][33], uint32_t max_items, uint32_t* count_out )
 {

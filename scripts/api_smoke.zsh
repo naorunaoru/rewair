@@ -27,6 +27,7 @@ check "status has settings.tz_posix" jq -e '.settings.tz_posix | strings' <<< "$
 
 check "scan returns array"          sh -c "curl -sf '$BASE/api/scan' | jq -e 'type == \"array\"'"
 check "networks returns array"      sh -c "curl -sf '$BASE/api/networks' | jq -e 'type == \"array\"'"
+check "mqtt config/status shape"    sh -c "curl -sf '$BASE/api/mqtt' | jq -e '(.enabled | type == \"boolean\") and (.connected | type == \"boolean\") and (.port | numbers)'"
 
 check "update requires operation"   sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$BASE/api/update')\" = 400 ]"
 check "disp rejects bad mode (400)" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"bogus\"}' '$BASE/api/disp')\" = 400 ]"

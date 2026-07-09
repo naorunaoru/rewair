@@ -33,6 +33,7 @@
 #include "rewair_sflash.h"
 #include "web_api.h"
 #include "rewair_net_mode.h"
+#include "rewair_mqtt.h"
 #include "spi_flash.h"
 #include "spi_flash_internal.h" /* device_id_t + sflash_read_ID (on GLOBAL_INCLUDES via drivers/spi_flash component) */
 
@@ -1080,6 +1081,8 @@ void application_start( void )
     {
         printf( "wlan init failed: %d\n", (int)result );
     }
+
+    rewair_mqtt_start( );
 
     if ( wiced_rtos_create_thread( &console_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "console",
                                    console_thread_main, CONSOLE_THREAD_STACK_SIZE, NULL ) != WICED_SUCCESS )

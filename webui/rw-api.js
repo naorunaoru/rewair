@@ -165,6 +165,8 @@ const RewairAPI = {
     }
     return post('/api/settings', p);
   },
+  mqtt: () => req('/api/mqtt'),
+  setMQTT: (patch) => post('/api/mqtt', patch),
   setDisp: (mode) => post('/api/disp', { mode }),
   setTime: (epoch) => post('/api/time', { epoch }),
   update: updateFirmware,

@@ -32,6 +32,9 @@ What's inside of the Element?
   - `rewair_net_mode`: pure-STA-or-pure-AP network mode state machine (setup
     AP bring-up/teardown, boot-autojoin fallback, self-heal). See [AP Setup
     Mode](#ap-setup-mode) below.
+  - `rewair_mqtt` / `rewair_mqtt_packet`: persisted MQTT broker settings,
+    MQTT 3.1.1 transport, reconnect/last-will handling, retained telemetry,
+    and Home Assistant discovery.
   - `rewair_console`: serial console command parser.
   - `rewair_score`: sensor-index-to-score math.
   - `rewair_walltime`: epoch/wall-clock helpers.
@@ -52,9 +55,9 @@ What's inside of the Element?
   external SPI flash pin mapping and the power-loss-safe OTA boot copier.
 - `webui/`: the web UI itself — Preact + htm, built with Vite, plain
   npm (no framework CLI). See [Web UI](#web-ui) below.
-- `tests/host/`: 8 host-buildable test suites (`test_drops`, `test_tz`,
+- `tests/host/`: 9 host-buildable test suites (`test_drops`, `test_tz`,
   `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
-  `test_ota`) that
+  `test_ota`, `test_mqtt_packet`) that
   compile the relevant `rewair_*.c` files directly with the system `cc`, no
   WICED/ARM toolchain required.
 - `scripts`:
@@ -236,7 +239,7 @@ both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
 REWAIR_IP=<device-ip> scripts/api_smoke.zsh
 ```
 
-Runs 20 checks against a live device: web API status/scan/networks shape,
+Runs 21 checks against a live device: web API status/scan/networks/MQTT shape,
 POST route validation (400/405), SSE, split-packet POST body handling,
 and the web UI being served from sflash (`/`, `/app.js`, gzip headers, 404
 on unknown paths).
@@ -263,6 +266,7 @@ requests CORS-"simple") in addition to `application/json`.
 | `/api/forget` | POST | Remove a saved network. |
 | `/api/priority` | POST | Reorder saved-network join priority. |
 | `/api/settings` | POST | Update user settings (name, units, timezone, display mode). |
+| `/api/mqtt` | GET/POST | Read MQTT runtime/config status or update broker, authentication, topic, and Home Assistant discovery settings. The saved password is never returned. |
 | `/api/time` | POST | Set/override the device's wall-clock time. |
 | `/api/disp` | POST | Set the F103 display mode. |
 | `/api/update` | POST | Chunked F411 firmware OTA used by the web portal: begin, sequential data chunks, verify/commit, reboot. See [docs/ota.md](docs/ota.md). |
@@ -309,6 +313,40 @@ The web API/UI status contract reflects AP mode already: `/api/status`'s
 `wifi` object reports `"mode":"ap"` plus `ap_ssid`, `ap_ip`, and
 `saved_count` (vs. `"mode":"sta"` plus `ssid`/`rssi`/`ip`/`gw`/`dns` when
 joined).
+
+## MQTT and Home Assistant
+
+In the device portal, open **Settings → MQTT & Home Assistant → Configure**,
+then enter the hostname/IP and port of the MQTT broker used by Home Assistant.
+Username/password authentication is optional. Rewair currently supports MQTT
+3.1.1 over unencrypted TCP (normally port `1883`), so the broker should stay on
+a trusted local network; MQTT over TLS is not included in this firmware build.
+
+With Home Assistant discovery enabled (the default), Rewair publishes retained
+discovery records below the `homeassistant` prefix and creates seven entities:
+temperature, humidity, carbon dioxide, VOC, dust, illuminance, and the Rewair
+air-quality score. Every entity shares a stable device identifier derived from
+the Wi-Fi MAC, so a rename or reboot does not create duplicates.
+
+Telemetry is a retained JSON object at:
+
+```text
+rewair/rewair_<12-hex-mac>/state
+```
+
+The adjacent `availability` topic carries retained `online`/`offline` state and
+is also configured as the MQTT last will. A custom state-topic prefix and Home
+Assistant discovery prefix can be set in the same dialog. Broker credentials
+and settings are persisted in the WICED DCT; factory reset clears them and,
+when the broker is reachable, removes retained discovery records before
+rebooting.
+
+For a quick broker-side check:
+
+```sh
+mosquitto_sub -h <broker> -u <user> -P '<password>' -v \
+  -t 'rewair/#' -t 'homeassistant/sensor/#'
+```
 
 ## Current State
 
