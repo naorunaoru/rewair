@@ -28,7 +28,7 @@ check "status has settings.tz_posix" jq -e '.settings.tz_posix | strings' <<< "$
 check "scan returns array"          sh -c "curl -sf '$BASE/api/scan' | jq -e 'type == \"array\"'"
 check "networks returns array"      sh -c "curl -sf '$BASE/api/networks' | jq -e 'type == \"array\"'"
 
-check "update returns 501"          sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{}' '$BASE/api/update')\" = 501 ]"
+check "update requires operation"   sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST '$BASE/api/update')\" = 400 ]"
 check "disp rejects bad mode (400)" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"mode\":\"bogus\"}' '$BASE/api/disp')\" = 400 ]"
 check "time rejects tiny epoch"     sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' -d '{\"epoch\":5}' '$BASE/api/time')\" = 400 ]"
 check "disp accepts text/plain (204)" sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: text/plain' -d '{\"mode\":\"score\"}' '$BASE/api/disp')\" = 204 ]"

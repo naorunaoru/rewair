@@ -182,48 +182,20 @@ wiced_result_t wifi_store_ap_credentials( const wiced_ap_info_t* ap,
  * (still used by the console "join" path), which wipes the whole list and writes
  * slot 0 only. */
 
-wiced_result_t wifi_list_add( const char* ssid, const char* pass )
+/* Shared slot writer for wifi_list_add / wifi_list_store: find the entry whose
+ * SSID matches (update it IN PLACE -- details and security key both rewritten,
+ * so a retry with a corrected password replaces the bad entry) or the first
+ * free slot, then write details+key and mark device_configured. Factored
+ * verbatim out of wifi_list_add (Phase 3 Task 5 fix); wifi_list_add's effect
+ * is unchanged. */
+static wiced_result_t list_write_slot( const char* ssid, const wiced_ap_info_t* details,
+                                       const char* key, uint32_t key_len )
 {
-    const wiced_scan_result_t* scan;
-    wiced_security_t security = WICED_SECURITY_WPA2_MIXED_PSK;
-    wiced_ap_info_t joined_ap;
-    char joined_key[64];
-    uint32_t joined_key_len = 0u;
     wiced_result_t result;
     platform_dct_wifi_config_t* wifi_config = NULL;
     int free_slot = -1;
     int match_slot = -1;
     int i;
-
-    if ( ssid == NULL || cstr_len( ssid ) == 0u || cstr_len( ssid ) > SSID_NAME_SIZE )
-    {
-        return WICED_BADARG;
-    }
-
-    scan = find_best_scan_result_for_ssid( ssid );
-    if ( scan == NULL && ( pass == NULL || cstr_len( pass ) == 0u ) )
-    {
-        security = WICED_SECURITY_OPEN;
-    }
-
-    /* Join first; only persist on success (mirrors wifi_join_command, but this
-     * variant does NOT let the join path wipe-and-write slot 0 -- we do our own
-     * find-existing-or-first-free-slot write below with the actual joined AP
-     * details). */
-    result = wifi_join_command_ex( ssid, pass != NULL ? pass : "", security, scan,
-                                   scan != NULL ? 0 : 1 /* force_security only when we guessed */,
-                                   0 /* store_to_dct */,
-                                   &joined_ap, joined_key, &joined_key_len );
-    if ( result != WICED_SUCCESS )
-    {
-        return result;
-    }
-
-    if ( joined_ap.SSID.length == 0u || joined_ap.SSID.length > SSID_NAME_SIZE ||
-         joined_key_len > SECURITY_KEY_SIZE )
-    {
-        return WICED_BADARG;
-    }
 
     wiced_rtos_lock_mutex( &dct_wifi_mutex );
 
@@ -267,12 +239,12 @@ wiced_result_t wifi_list_add( const char* ssid, const char* pass )
         int slot = match_slot >= 0 ? match_slot : free_slot;
         wiced_config_ap_entry_t* stored = &wifi_config->stored_ap_list[slot];
 
-        stored->details = joined_ap;
-        stored->security_key_length = (uint8_t)joined_key_len;
+        stored->details = *details;
+        stored->security_key_length = (uint8_t)key_len;
         memset( stored->security_key, 0, sizeof( stored->security_key ) );
-        if ( joined_key_len != 0u )
+        if ( key_len != 0u )
         {
-            memcpy( stored->security_key, joined_key, joined_key_len );
+            memcpy( stored->security_key, key, key_len );
         }
         wifi_config->device_configured = WICED_TRUE;
 
@@ -292,6 +264,102 @@ wiced_result_t wifi_list_add( const char* ssid, const char* pass )
     }
 
     return result;
+}
+
+wiced_result_t wifi_list_add( const char* ssid, const char* pass )
+{
+    const wiced_scan_result_t* scan;
+    wiced_security_t security = WICED_SECURITY_WPA2_MIXED_PSK;
+    wiced_ap_info_t joined_ap;
+    char joined_key[64];
+    uint32_t joined_key_len = 0u;
+    wiced_result_t result;
+
+    if ( ssid == NULL || cstr_len( ssid ) == 0u || cstr_len( ssid ) > SSID_NAME_SIZE )
+    {
+        return WICED_BADARG;
+    }
+
+    scan = find_best_scan_result_for_ssid( ssid );
+    if ( scan == NULL && ( pass == NULL || cstr_len( pass ) == 0u ) )
+    {
+        security = WICED_SECURITY_OPEN;
+    }
+
+    /* Join first; only persist on success (mirrors wifi_join_command, but this
+     * variant does NOT let the join path wipe-and-write slot 0 -- we do our own
+     * find-existing-or-first-free-slot write below with the actual joined AP
+     * details). */
+    result = wifi_join_command_ex( ssid, pass != NULL ? pass : "", security, scan,
+                                   scan != NULL ? 0 : 1 /* force_security only when we guessed */,
+                                   0 /* store_to_dct */,
+                                   &joined_ap, joined_key, &joined_key_len );
+    if ( result != WICED_SUCCESS )
+    {
+        return result;
+    }
+
+    if ( joined_ap.SSID.length == 0u || joined_ap.SSID.length > SSID_NAME_SIZE ||
+         joined_key_len > SECURITY_KEY_SIZE )
+    {
+        return WICED_BADARG;
+    }
+
+    return list_write_slot( ssid, &joined_ap, joined_key, joined_key_len );
+}
+
+wiced_result_t wifi_list_store( const char* ssid, const char* pass )
+{
+    const wiced_scan_result_t* scan;
+    wiced_ap_info_t details;
+    uint32_t ssid_len;
+    uint32_t pass_len = pass != NULL ? cstr_len( pass ) : 0u;
+
+    if ( ssid == NULL || cstr_len( ssid ) == 0u || cstr_len( ssid ) > SSID_NAME_SIZE )
+    {
+        return WICED_BADARG;
+    }
+    if ( pass_len > SECURITY_KEY_SIZE )
+    {
+        return WICED_BADARG;
+    }
+    ssid_len = cstr_len( ssid );
+
+    /* Resolve AP details from the scan cache WITHOUT joining. The AP portal
+     * flow guarantees a recent cache: the UI lists networks via /api/scan
+     * before the user can pick one. */
+    memset( &details, 0, sizeof( details ) );
+    scan = find_best_scan_result_for_ssid( ssid );
+    if ( scan != NULL )
+    {
+        details.SSID            = scan->SSID;
+        details.BSSID           = scan->BSSID;
+        details.signal_strength = scan->signal_strength;
+        details.max_data_rate   = scan->max_data_rate;
+        details.bss_type        = scan->bss_type;
+        details.security        = scan->security;
+        details.channel         = scan->channel;
+        details.band            = scan->band;
+    }
+    else
+    {
+        /* Not in the cache (hidden network / stale cache): guess security from
+         * the password and leave BSSID/channel zero. Safe because the SDK's
+         * autojoin (wiced_join_ap_specific, WICED/internal/wifi.c) only does a
+         * BSSID/channel-specific join when BSSID is non-null AND channel != 0;
+         * otherwise -- and whenever the specific join fails -- it falls back to
+         * wwd_wifi_join by SSID with the stored security. So a zeroed entry
+         * joins by SSID; only a wrong security guess keeps it from joining, in
+         * which case AP_FALLBACK returns the user to the portal to retry (the
+         * retry updates this same slot). */
+        details.SSID.length = (uint8_t)ssid_len;
+        memcpy( details.SSID.value, ssid, ssid_len );
+        details.bss_type = WICED_BSS_TYPE_INFRASTRUCTURE;
+        details.security = pass_len == 0u ? WICED_SECURITY_OPEN : WICED_SECURITY_WPA2_MIXED_PSK;
+    }
+    details.next = NULL;
+
+    return list_write_slot( ssid, &details, pass != NULL ? pass : "", pass_len );
 }
 
 wiced_result_t wifi_list_remove( const char* ssid )

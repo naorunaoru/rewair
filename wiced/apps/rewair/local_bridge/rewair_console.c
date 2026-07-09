@@ -9,7 +9,7 @@
 #include "rewair_wifi_dct.h"
 #include "rewair_wifi_scan.h"
 #include "rewair_wifi_join.h"
-#include "web_api.h"
+#include "rewair_sflash.h"
 
 /* ---- Cross-boundary statics owned by local_bridge.c ----
  * These file-globals stay in local_bridge.c (network/sensor-reset clusters,

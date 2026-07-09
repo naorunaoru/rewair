@@ -15,6 +15,8 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_wifi_dct.c \
                    rewair_wifi_scan.c \
                    rewair_wifi_join.c \
+                   rewair_net_mode.c \
+                   rewair_ota.c \
                    rewair_console.c \
                    jsmn.c \
                    web_api.c \
@@ -24,6 +26,7 @@ $(NAME)_SOURCES := local_bridge.c \
 $(NAME)_INCLUDES := ../../../libraries/protocols/SNTP
 
 $(NAME)_COMPONENTS += daemons/HTTP_server
+$(NAME)_COMPONENTS += daemons/DNS_redirect
 
 GLOBAL_DEFINES += JSMN_PARENT_LINKS
 

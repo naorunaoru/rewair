@@ -49,12 +49,15 @@ int main( void )
 
     /* AP-mode variant */
     st.wifi_mode = 1u;
-    strcpy( st.ap_ssid, "rewair-setup-1be0" );
+    strcpy( st.ap_ssid, "rewair-setup-ab12" );
     strcpy( st.ap_ip, "192.168.0.1" );
+    st.saved_count = 0u;
     len = rewair_json_status( &st, buf, sizeof( buf ) );
     assert( len > 0 );
     assert( strstr( buf, "\"mode\":\"ap\"" ) != NULL );
-    assert( strstr( buf, "\"ap_ssid\":\"rewair-setup-1be0\"" ) != NULL );
+    assert( strstr( buf, "\"ap_ssid\":\"rewair-setup-ab12\"" ) != NULL );
+    assert( strstr( buf, "\"ap_ip\":\"192.168.0.1\"" ) != NULL );
+    assert( strstr( buf, "\"rssi\"" ) == NULL ); /* STA-only key must not appear */
 
     /* name with a quote must be escaped */
     strcpy( st.name, "Bob's \"lab\"" );

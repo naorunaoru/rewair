@@ -1,6 +1,6 @@
 # Rewair Status
 
-Date: 2026-07-07.
+Date: 2026-07-09.
 
 ## Hardware
 
@@ -38,10 +38,26 @@ Date: 2026-07-07.
 - Web UI (`webui/`, Preact + Vite) builds to a packed RWFS image and is
   served by the device itself from external SPI flash at `/`, `/app.js`,
   `/rewair.css` — no separate web server needed once flashed.
-- 7 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
-  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`), all
+- `rewair_net_mode` (`wiced/apps/rewair/local_bridge/rewair_net_mode.c`):
+  pure-STA-or-pure-AP setup mode. No stored network -> open setup AP
+  `rewair-setup-<xxxx>` (last 4 MAC hex) at `192.168.0.1` with internal
+  DHCP, DNS redirect, and a captive `302` portal; boot autojoin failing 3
+  times -> the same AP as a fallback, self-healing back to STA every ~5 min
+  (skipped while a client is on the AP). `/api/join` in AP mode stores
+  credentials (from the scan cache, no live probe) and switches to STA
+  asynchronously (~1 s); `/api/reset` clears credentials and reboots back
+  into the setup AP. See the README's [AP Setup
+  Mode](../README.md#ap-setup-mode) section.
+- F411 OTA is implemented through the portal: guarded firmware-side SPI
+  writes, chunked upload/readback verification, boot-time known-good backup,
+  idempotent internal-flash copy, and three-attempt trial rollback. It builds
+  within both flash regions and has host tests; the bench power-loss gauntlet
+  in `docs/ota.md` remains pending.
+- 8 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
+  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
+  `test_ota`), all
   passing against a clean `make -C tests/host`.
-- `scripts/api_smoke.zsh`: 19-check smoke test against a live device,
+- `scripts/api_smoke.zsh`: 20-check smoke test against a live device,
   covering both the web API and the sflash-served UI.
 - External SPI flash read/write tooling: `scripts/flash_sflash_openocd.zsh`
   (OpenOCD + WICED sflash-write RAM stub, SWD/CMSIS-DAP, with readback
@@ -141,6 +157,9 @@ scripts/flash_webui.zsh
 
 (`flash_webui.zsh` already runs `npm run build` itself; the manual `npm ci`
 step above is only needed the first time, to install dependencies.)
+
+After the one-time OTA bootloader bootstrap, subsequent F411 updates can be
+installed from Settings → Firmware in that web UI. See `docs/ota.md`.
 
 Run the host test suites:
 

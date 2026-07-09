@@ -29,6 +29,9 @@ What's inside of the Element?
   - `rewair_frames` / `rewair_frame_rx`: F103 UART frame encode/decode.
   - `rewair_wifi_dct`: WICED DCT-backed multi-network saved-AP list.
   - `rewair_wifi_scan` / `rewair_wifi_join`: Wi-Fi scan and join/connect flow.
+  - `rewair_net_mode`: pure-STA-or-pure-AP network mode state machine (setup
+    AP bring-up/teardown, boot-autojoin fallback, self-heal). See [AP Setup
+    Mode](#ap-setup-mode) below.
   - `rewair_console`: serial console command parser.
   - `rewair_score`: sensor-index-to-score math.
   - `rewair_walltime`: epoch/wall-clock helpers.
@@ -39,16 +42,19 @@ What's inside of the Element?
   - `rewair_drops`: dropped-frame counters.
   - `rewair_uifs`: reader for the packed web-UI image format (RWFS) on
     external SPI flash; host-testable, no WICED includes.
+  - `rewair_ota`: chunked upload, staged-image verification, and trial-boot
+    confirmation for F411 OTA. See [F411 firmware OTA](docs/ota.md).
   - `web_api.c`/`.h`: HTTP page database, all `/api/...` JSON routes, and
     Server-Sent Events.
   - `web_ui.c`/`.h`: serves the web UI (`/`, `/app.js`, `/rewair.css`) out of
     the RWFS image in external flash, with a small built-in fallback page.
 - `wiced/platforms/AWAIR`: Awair/EMW3165 WICED platform pin map, including the
-  external SPI flash pin mapping.
+  external SPI flash pin mapping and the power-loss-safe OTA boot copier.
 - `webui/`: the web UI itself — Preact + htm, built with Vite, plain
   npm (no framework CLI). See [Web UI](#web-ui) below.
-- `tests/host/`: 7 host-buildable test suites (`test_drops`, `test_tz`,
-  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`) that
+- `tests/host/`: 8 host-buildable test suites (`test_drops`, `test_tz`,
+  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
+  `test_ota`) that
   compile the relevant `rewair_*.c` files directly with the system `cc`, no
   WICED/ARM toolchain required.
 - `scripts`:
@@ -214,9 +220,10 @@ which is wired differently):
 
 Rewair owns the top 256 KiB (`0x1C0000`-`0x1FFFFF`) for the packed web UI
 image (RWFS format — see `wiced/apps/rewair/local_bridge/rewair_uifs.h` and
-the packer at `webui/scripts/pack-rwfs.mjs`). The address space below
-`0x1C0000` holds the stock WLAN firmware blob and other factory-programmed
-content; `flash_sflash_openocd.zsh` refuses to write there unless `FORCE=1`.
+the packer at `webui/scripts/pack-rwfs.mjs`). F411 OTA uses `0x000000`–
+`0x100FFF` for staging, a known-good backup, and its state journal. The
+firmware write guard rejects every write touching the UI region. See
+[docs/ota.md](docs/ota.md) for the exact map and rollback behavior.
 
 Console commands (over the serial debug console) and a debug HTTP route
 both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
@@ -229,14 +236,16 @@ both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
 REWAIR_IP=<device-ip> scripts/api_smoke.zsh
 ```
 
-Runs 19 checks against a live device: web API status/scan/networks shape,
-POST route validation (400/405/501), SSE, and the web UI being served from
-sflash (`/`, `/app.js`, gzip headers, 404 on unknown paths).
+Runs 20 checks against a live device: web API status/scan/networks shape,
+POST route validation (400/405), SSE, split-packet POST body handling,
+and the web UI being served from sflash (`/`, `/app.js`, gzip headers, 404
+on unknown paths).
 
-Known flake: on the very first smoke run right after a boot, the Wi-Fi scan
-check occasionally fails (roughly 1 run in 7) while the radio is still
-settling. Rerun once if only that check fails; a fresh boot needs a moment
-before scan results are reliable.
+Known flake: the split-packet POST-body check (`scripts/check_post_body.py`)
+intermittently times out connecting during full-suite runs (more often when
+suites run back-to-back) but passes reliably standalone. Working theory: dead
+SSE subscriber sockets hold HTTP-daemon connection slots until the next state
+broadcast reaps them. If only that check fails, rerun it standalone to confirm.
 
 ## Web API Summary
 
@@ -250,21 +259,62 @@ requests CORS-"simple") in addition to `application/json`.
 | `/api/scan` | GET | Trigger/read a Wi-Fi scan, returns an array of nearby APs. |
 | `/api/networks` | GET | List saved Wi-Fi networks (DCT-backed). |
 | `/api/events` | GET | Server-Sent Events stream of the same status snapshot, pushed on change or every 15s. |
-| `/api/join` | POST | Join a Wi-Fi network (and save credentials). |
+| `/api/join` | POST | Join a Wi-Fi network (and save credentials). In AP setup mode (see [AP Setup Mode](#ap-setup-mode)), stores credentials only (no live join probe) and triggers an async switch to STA. |
 | `/api/forget` | POST | Remove a saved network. |
 | `/api/priority` | POST | Reorder saved-network join priority. |
 | `/api/settings` | POST | Update user settings (name, units, timezone, display mode). |
 | `/api/time` | POST | Set/override the device's wall-clock time. |
 | `/api/disp` | POST | Set the F103 display mode. |
-| `/api/update` | POST | Firmware OTA — not implemented, returns 501. |
-| `/api/reset` | POST | Clear saved Wi-Fi credentials and settings, then reboot. |
+| `/api/update` | POST | Chunked F411 firmware OTA used by the web portal: begin, sequential data chunks, verify/commit, reboot. See [docs/ota.md](docs/ota.md). |
+| `/api/reset` | POST | Clear all saved Wi-Fi credentials and settings, then reboot into AP setup mode. |
 | `/api/debug/sflash` | GET | Debug route (compiled under `REWAIR_API_CORS_DEV`, currently enabled by default — see `web_api.h`) raw SPI-flash readback for debugging. |
 | `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image in external flash (or a small built-in fallback page for `/` if no image is flashed yet). |
 
+## AP Setup Mode
+
+The device is always in exactly one radio role — joined to a home network as
+a station (STA), or hosting its own setup access point (AP) — never both at
+once. `rewair_net_mode`
+(`wiced/apps/rewair/local_bridge/rewair_net_mode.c`) owns the transitions:
+
+- No stored Wi-Fi network at all: boot straight into the setup AP, no STA
+  join attempted.
+- Stored network(s) exist, but boot-time autojoin fails 3 consecutive
+  attempts: fall back to the setup AP. A steady-state STA drop (link lost
+  after having been up) does not count toward this and keeps retrying
+  autojoin indefinitely instead of falling back.
+
+The setup AP is an open network named `rewair-setup-<xxxx>`, where `<xxxx>`
+is the last two bytes of the device's Wi-Fi MAC in lowercase hex (e.g.
+`rewair-setup-30f4`), on channel 6, served at `192.168.0.1/24` via the WICED
+internal DHCP server. While it is up, any HTTP request whose path isn't
+exactly `/`, `/app.js`, or `/rewair.css` gets a DNS redirect (WICED's
+`DNS_redirect` daemon) plus a `302` to `/`, so phones/laptops pop the
+captive-portal sign-in page automatically. STA-mode HTTP behavior is
+unchanged (no redirect, plain 404 for unknown paths).
+
+Posting to `/api/join` while in setup/fallback AP mode stores the given
+SSID/password only — security and channel are resolved from the `/api/scan`
+result cache, not a live join probe — flushes an immediate success response,
+then asynchronously switches to STA on the network thread's next tick
+(within ~1 s). `POST /api/reset` clears saved credentials/settings and
+reboots back into the setup AP, from either mode.
+
+The fallback AP self-heals: every ~5 minutes it retries STA autojoin from
+the saved credentials, unless a client is currently associated to the setup
+AP (deferred so an in-progress phone/laptop configuration session isn't torn
+down mid-flow).
+
+The web API/UI status contract reflects AP mode already: `/api/status`'s
+`wifi` object reports `"mode":"ap"` plus `ap_ssid`, `ap_ip`, and
+`saved_count` (vs. `"mode":"sta"` plus `ssid`/`rssi`/`ip`/`gw`/`dns` when
+joined).
+
 ## Current State
 
-Both the web API and the self-contained web UI (served from the device's own
-SPI flash) are working end to end. The F103 sensor board's `SENS` stream
+The web API, self-contained UI, AP setup portal, and F411 OTA implementation
+are built and host-verified; OTA's destructive power-loss/rollback gauntlet is
+still a bench checkpoint. The F103 sensor board's `SENS` stream
 still occasionally stalls after `REDY`/`TEST` on boot — intermittent, not
 fully root-caused. See [docs/status.md](docs/status.md) for the current
 detailed state and diagnostics.

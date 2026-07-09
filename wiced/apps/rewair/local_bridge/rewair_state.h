@@ -61,6 +61,8 @@ void rewair_state_set_sens( const rewair_sens_t* sens, uint32_t score, const cha
 void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
                                 const char* gw, const char* dns, const char* mac,
                                 uint32_t saved_count );
+void rewair_state_set_wifi_ap( const char* ap_ssid, const char* ap_ip, const char* mac,
+                               uint32_t saved_count );
 void rewair_state_wifi_drop( void );
 void rewair_state_set_time( uint32_t epoch, uint8_t synced );
 void rewair_state_set_settings( const char* name, uint8_t units, uint8_t time_mode,

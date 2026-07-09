@@ -1,3 +1,5 @@
+import { firmwareCRC32, FW_CHUNK_SIZE, FW_MAX_SIZE } from './rw-ota.js';
+
 /* Rewair production API adapter: RewairAPI over fetch/EventSource.
  * Point at a remote device with ?device=192.168.x.x (dev), else same-origin.
  * Exported as an ES module AND still assigned to window.RewairAPI (kept for
@@ -97,6 +99,51 @@ let es = null;
 let pollTimer = null;
 let esFailures = 0;
 
+function otaPost(path, body, onUpload) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', BASE + path, true);
+    if (body != null) xhr.setRequestHeader('Content-Type', 'text/plain');
+    if (onUpload) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onUpload(e.loaded); };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { resolve(xhr.responseText ? JSON.parse(xhr.responseText) : null); }
+        catch (e) { resolve(null); }
+        return;
+      }
+      let message = `HTTP ${xhr.status}`;
+      try { message = JSON.parse(xhr.responseText).error || message; } catch (e) { /* keep default */ }
+      const err = new Error(message);
+      err.status = xhr.status;
+      reject(err);
+    };
+    xhr.onerror = () => reject(new Error('Device connection lost during firmware upload'));
+    xhr.send(body);
+  });
+}
+
+async function updateFirmware(file, onProgress) {
+  if (!file || file.size < 8) throw new Error('Choose a valid firmware .bin file');
+  if (file.size > FW_MAX_SIZE) throw new Error('Firmware image exceeds the 464 KB app region');
+
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const crc = firmwareCRC32(bytes).toString(16).padStart(8, '0');
+  const progress = typeof onProgress === 'function' ? onProgress : () => {};
+
+  progress(0);
+  await otaPost(`/api/update?op=begin&size=${file.size}&crc=${crc}`, null);
+  for (let offset = 0; offset < file.size; offset += FW_CHUNK_SIZE) {
+    const end = Math.min(offset + FW_CHUNK_SIZE, file.size);
+    const chunk = file.slice(offset, end);
+    await otaPost(`/api/update?offset=${offset}`, chunk, (loaded) => {
+      progress(Math.min(99, Math.floor(((offset + loaded) / file.size) * 99)));
+    });
+    progress(Math.min(99, Math.floor((end / file.size) * 99)));
+  }
+  await otaPost('/api/update?op=commit', null);
+  progress(100);
+}
+
 const RewairAPI = {
   status: () => req('/api/status'),
   scan: () => req('/api/scan'),
@@ -120,8 +167,7 @@ const RewairAPI = {
   },
   setDisp: (mode) => post('/api/disp', { mode }),
   setTime: (epoch) => post('/api/time', { epoch }),
-  update: (_file, _onProgress) =>
-    Promise.reject(new Error('Firmware update not supported by this device')),
+  update: updateFirmware,
   reset: () => post('/api/reset', {}),
 
   /* Live updates: SSE with transparent polling fallback. */

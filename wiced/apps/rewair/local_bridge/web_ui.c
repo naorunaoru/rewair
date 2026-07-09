@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "web_api.h"
+#include "rewair_sflash.h"
 #include "rewair_uifs.h"
 
 /* Start of the 256 KB UI region (0x1C0000-0x1FFFFF) reserved on the 2 MiB
@@ -141,6 +142,30 @@ static void web_ui_send_404( wiced_http_response_stream_t* stream )
     wiced_http_response_stream_write( stream, body, (uint32_t)strlen( body ) );
 }
 
+/* Set by rewair_net_mode.c: nonzero while the device is serving its AP setup
+ * network (Task 3's rewair_net_mode_enter_ap / _exit_ap_to_sta are the sole
+ * callers of web_ui_set_captive). volatile: written by the network thread,
+ * read by HTTP worker threads servicing web_ui_root_handler. */
+static volatile uint8_t ui_captive_mode = 0u;
+
+void web_ui_set_captive( uint8_t on )
+{
+    ui_captive_mode = on;
+}
+
+static void web_ui_send_302_portal( wiced_http_response_stream_t* stream )
+{
+    static const char redirect[] =
+        "HTTP/1.1 302 Found\r\n"
+        "Location: http://192.168.0.1/\r\n"
+        "Content-Length: 0\r\n"
+        "Connection: close\r\n"
+        "\r\n";
+
+    wiced_http_response_stream_write( stream, redirect, (uint32_t)( sizeof( redirect ) - 1u ) );
+    rewair_web_api_disconnect_stream( stream );
+}
+
 /* Built-in ~300-byte fallback page served for "/" when no valid UI image is
  * present in sflash (e.g. a fresh board before scripts/flash_webui.zsh has
  * ever run). Deliberately NOT gzipped -- Content-Encoding is omitted. */
@@ -212,10 +237,20 @@ int32_t web_ui_root_handler( const char* url, wiced_http_response_stream_t* stre
      * web_api.c) -- so this generator is invoked for every URL not claimed
      * by an earlier, more specific entry (e.g. "/nope.js", "/foo/bar"), not
      * just the literal root. Reject anything that isn't exactly "/" or
-     * "/?query..." with 404 instead of serving the index page for it. */
+     * "/?query..." with 404 instead of serving the index page for it -- or,
+     * in AP setup captive mode, with a 302 to the setup gateway so phone
+     * captive-portal probes open the setup UI instead of reporting an
+     * error. */
     if ( url == NULL || url[0] != '/' || ( url[1] != '\0' && url[1] != '?' ) )
     {
-        web_ui_send_404( stream );
+        if ( ui_captive_mode != 0u )
+        {
+            web_ui_send_302_portal( stream );
+        }
+        else
+        {
+            web_ui_send_404( stream );
+        }
         return 0;
     }
     if ( http_data != NULL && http_data->request_type != WICED_HTTP_GET_REQUEST )

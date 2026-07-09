@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/pack-rwfs.mjs webui.rwfs dist/index.html:/ dist/app.js:/app.js dist/rewair.css:/rewair.css"
+    "build": "vite build && node scripts/pack-rwfs.mjs webui.rwfs dist/index.html:/ dist/app.js:/app.js dist/rewair.css:/rewair.css",
+    "test": "node scripts/test-ota.mjs"
   },
   "dependencies": {
     "htm": "3.1.1",
