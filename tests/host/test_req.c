@@ -7,6 +7,7 @@ int main( void )
 {
     char out[65];
     uint32_t n = 0u;
+    uint8_t flag = 0u;
     char ssids[8][33];
 
     const char* join = "{\"ssid\":\"mikrotik-2g\",\"pass\":\"hunter\\\"2\"}";
@@ -22,6 +23,14 @@ int main( void )
 
     const char* big = "{\"epoch\":99999999999}";
     assert( rewair_req_get_u32( big, (uint32_t)strlen( big ), "epoch", &n ) == 0 );
+
+    const char* booleans = "{\"enabled\":true,\"discovery\":false}";
+    assert( rewair_req_get_bool( booleans, (uint32_t)strlen( booleans ),
+                                "enabled", &flag ) == 1 && flag == 1u );
+    assert( rewair_req_get_bool( booleans, (uint32_t)strlen( booleans ),
+                                "discovery", &flag ) == 1 && flag == 0u );
+    assert( rewair_req_get_bool( booleans, (uint32_t)strlen( booleans ),
+                                "missing", &flag ) == 0 );
 
     const char* prio = "{\"order\":[\"a\",\"b\",\"c\"]}";
     assert( rewair_req_get_string_array( prio, (uint32_t)strlen( prio ), "order", ssids, 8u, &n ) == 1 );

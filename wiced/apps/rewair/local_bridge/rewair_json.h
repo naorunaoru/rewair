@@ -6,6 +6,7 @@
 int rewair_req_get_string( const char* body, uint32_t len, const char* key,
                            char* out, uint32_t out_size );
 int rewair_req_get_u32( const char* body, uint32_t len, const char* key, uint32_t* out );
+int rewair_req_get_bool( const char* body, uint32_t len, const char* key, uint8_t* out );
 int rewair_req_get_string_array( const char* body, uint32_t len, const char* key,
                                  char out[][33], uint32_t max_items, uint32_t* count_out );
 

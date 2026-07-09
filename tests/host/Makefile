@@ -3,7 +3,7 @@ SRCDIR := ../../wiced/apps/rewair/local_bridge
 PLATFORMDIR := ../../wiced/platforms/AWAIR
 CFLAGS := -std=c99 -Wall -Wextra -Werror -I$(SRCDIR) -I$(PLATFORMDIR) -DJSMN_PARENT_LINKS
 
-TESTS := test_drops test_tz test_req test_status test_uifs test_walltime test_score test_ota
+TESTS := test_drops test_tz test_req test_status test_uifs test_walltime test_score test_ota test_mqtt_packet
 
 RWFS_FIXTURE := /tmp/test_uifs_fixture.rwfs
 
@@ -33,6 +33,9 @@ test_score: test_score.c $(SRCDIR)/rewair_score.c $(SRCDIR)/rewair_fmt.c
 	$(CC) $(CFLAGS) -DREWAIR_HOST_BUILD -o $@ $^ && ./$@
 
 test_ota: test_ota.c $(PLATFORMDIR)/rewair_ota_common.c
+	$(CC) $(CFLAGS) -o $@ $^ && ./$@
+
+test_mqtt_packet: test_mqtt_packet.c $(SRCDIR)/rewair_mqtt_packet.c
 	$(CC) $(CFLAGS) -o $@ $^ && ./$@
 
 clean:

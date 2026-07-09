@@ -13,6 +13,7 @@
 #include "rewair_wifi_scan.h"
 #include "rewair_net_mode.h"
 #include "rewair_ota.h"
+#include "rewair_mqtt.h"
 #include "rewair_sflash.h"
 #include "web_ui.h"
 
@@ -698,6 +699,183 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     return 0;
 }
 
+static int mqtt_host_valid( const char* host )
+{
+    uint32_t i;
+
+    if ( host == NULL || host[0] == '\0' )
+    {
+        return 0;
+    }
+    for ( i = 0u; host[i] != '\0'; i++ )
+    {
+        unsigned char c = (unsigned char)host[i];
+        if ( c <= 0x20u || c >= 0x7fu || c == '/' || c == '#' || c == '+' )
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void api_mqtt_send_status( wiced_http_response_stream_t* stream )
+{
+    rewair_mqtt_config_t config;
+    rewair_mqtt_status_t status;
+    char host[REWAIR_MQTT_HOST_MAX * 2u];
+    char username[REWAIR_MQTT_USERNAME_MAX * 2u];
+    char topic[REWAIR_MQTT_TOPIC_PREFIX_MAX * 2u];
+    char discovery_prefix[REWAIR_MQTT_DISCOVERY_PREFIX_MAX * 2u];
+    char error[128];
+    char body[768];
+    int length;
+
+    rewair_mqtt_config_load( &config );
+    rewair_mqtt_get_status( &status );
+    (void)rewair_json_escape_string( config.host, host, sizeof( host ) );
+    (void)rewair_json_escape_string( config.username, username, sizeof( username ) );
+    (void)rewair_json_escape_string( config.topic_prefix, topic, sizeof( topic ) );
+    (void)rewair_json_escape_string( config.discovery_prefix, discovery_prefix,
+                                     sizeof( discovery_prefix ) );
+    (void)rewair_json_escape_string( status.last_error, error, sizeof( error ) );
+    length = snprintf(
+        body, sizeof( body ),
+        "{\"enabled\":%s,\"connected\":%s,\"host\":\"%s\",\"port\":%u,"
+        "\"username\":\"%s\",\"password_set\":%s,\"topic_prefix\":\"%s\","
+        "\"discovery\":%s,\"discovery_prefix\":\"%s\","
+        "\"published\":%lu,\"reconnects\":%lu,\"last_error\":\"%s\","
+        "\"tls\":false}",
+        config.enabled != 0u ? "true" : "false",
+        status.connected != 0u ? "true" : "false",
+        host, config.port, username,
+        config.password[0] != '\0' ? "true" : "false", topic,
+        config.discovery != 0u ? "true" : "false", discovery_prefix,
+        (unsigned long)status.published, (unsigned long)status.reconnects, error );
+    if ( length < 0 || (uint32_t)length >= sizeof( body ) )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "MQTT status too large" );
+        return;
+    }
+    api_send( stream, HTTP_HEADER_200, "application/json", body, (uint32_t)length );
+}
+
+/* ---- GET/POST /api/mqtt ----
+ * GET never exposes the persisted password; password_set lets the UI preserve
+ * it when an edit leaves the password field blank. POST accepts partial config
+ * updates, like /api/settings. */
+static int32_t api_mqtt_handler( const char* url, wiced_http_response_stream_t* stream,
+                                 void* arg, wiced_http_message_body_t* http_data )
+{
+    char body[API_BODY_MAX];
+    rewair_mqtt_config_t config;
+    char text[REWAIR_MQTT_TOPIC_PREFIX_MAX];
+    uint32_t number;
+    uint8_t boolean;
+    int length;
+    int got;
+
+    (void)url; (void)arg;
+    if ( method_is( http_data, WICED_HTTP_GET_REQUEST ) )
+    {
+        api_mqtt_send_status( stream );
+        return 0;
+    }
+    if ( !method_is( http_data, WICED_HTTP_POST_REQUEST ) )
+    {
+        api_send_error( stream, HTTP_HEADER_405, "GET or POST only" );
+        return 0;
+    }
+    length = api_read_body( http_data, body, sizeof( body ), stream );
+    if ( length < 0 )
+    {
+        return 0;
+    }
+    rewair_mqtt_config_load( &config );
+
+    got = rewair_req_get_bool( body, (uint32_t)length, "enabled", &boolean );
+    if ( got < 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "malformed body" );
+        return 0;
+    }
+    if ( got == 1 )
+    {
+        config.enabled = boolean;
+    }
+    if ( rewair_req_get_bool( body, (uint32_t)length, "discovery", &boolean ) == 1 )
+    {
+        config.discovery = boolean;
+    }
+    if ( rewair_req_get_u32( body, (uint32_t)length, "port", &number ) == 1 )
+    {
+        if ( number == 0u || number > 65535u )
+        {
+            api_send_error( stream, HTTP_HEADER_400, "port must be 1..65535" );
+            return 0;
+        }
+        config.port = (uint16_t)number;
+    }
+
+    if ( rewair_req_get_string( body, (uint32_t)length, "host", text,
+                                sizeof( config.host ) ) == 1 )
+    {
+        strncpy( config.host, text, sizeof( config.host ) - 1u );
+        config.host[sizeof( config.host ) - 1u] = '\0';
+    }
+    if ( rewair_req_get_string( body, (uint32_t)length, "username", text,
+                                sizeof( config.username ) ) == 1 )
+    {
+        strncpy( config.username, text, sizeof( config.username ) - 1u );
+        config.username[sizeof( config.username ) - 1u] = '\0';
+    }
+    if ( rewair_req_get_string( body, (uint32_t)length, "password", text,
+                                sizeof( config.password ) ) == 1 )
+    {
+        strncpy( config.password, text, sizeof( config.password ) - 1u );
+        config.password[sizeof( config.password ) - 1u] = '\0';
+    }
+    if ( rewair_req_get_string( body, (uint32_t)length, "topic_prefix", text,
+                                sizeof( config.topic_prefix ) ) == 1 )
+    {
+        strncpy( config.topic_prefix, text, sizeof( config.topic_prefix ) - 1u );
+        config.topic_prefix[sizeof( config.topic_prefix ) - 1u] = '\0';
+    }
+    if ( rewair_req_get_string( body, (uint32_t)length, "discovery_prefix", text,
+                                sizeof( config.discovery_prefix ) ) == 1 )
+    {
+        strncpy( config.discovery_prefix, text, sizeof( config.discovery_prefix ) - 1u );
+        config.discovery_prefix[sizeof( config.discovery_prefix ) - 1u] = '\0';
+    }
+
+    if ( config.enabled != 0u && mqtt_host_valid( config.host ) == 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "valid broker host required" );
+        return 0;
+    }
+    if ( config.password[0] != '\0' && config.username[0] == '\0' )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "username required with password" );
+        return 0;
+    }
+    if ( rewair_mqtt_topic_prefix_valid( config.topic_prefix, 1u ) == 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "invalid topic prefix" );
+        return 0;
+    }
+    if ( rewair_mqtt_topic_prefix_valid( config.discovery_prefix, 0u ) == 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "invalid discovery prefix" );
+        return 0;
+    }
+    if ( rewair_mqtt_config_save( &config ) != 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "MQTT config save failed" );
+        return 0;
+    }
+    api_mqtt_send_status( stream );
+    return 0;
+}
+
 /* ---- POST /api/time ---- */
 static int32_t api_time_handler( const char* url, wiced_http_response_stream_t* stream,
                                  void* arg, wiced_http_message_body_t* http_data )
@@ -1058,10 +1236,13 @@ static int32_t api_reset_handler( const char* url, wiced_http_response_stream_t*
 
     wifi_clear_stored_credentials( );
     rewair_settings_reset_defaults( NULL );
+    rewair_mqtt_config_reset( );
 
     api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
     wiced_http_response_stream_flush( stream );
-    wiced_rtos_delay_milliseconds( 300u );   /* let the 204 flush */
+    /* Also give the MQTT worker time to publish retained discovery removals
+     * before rebooting; otherwise a factory-reset device can remain in HA. */
+    wiced_rtos_delay_milliseconds( 1000u );
     wiced_framework_reboot( );
     return 0;
 }
@@ -1318,6 +1499,8 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_priority_handler, NULL } },
     { "/api/settings",  "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_settings_handler, NULL } },
+    { "/api/mqtt",      "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_mqtt_handler, NULL } },
     { "/api/time",      "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_time_handler, NULL } },
     { "/api/disp",      "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
@@ -1343,6 +1526,8 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_priority_handler, NULL } },
     { "/api/settings",  "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_settings_handler, NULL } },
+    { "/api/mqtt",      "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_mqtt_handler, NULL } },
     { "/api/time",      "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_time_handler, NULL } },
     { "/api/disp",      "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,

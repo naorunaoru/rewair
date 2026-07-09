@@ -18,6 +18,7 @@ import { h } from 'preact';
 import { useState, useRef, useEffect } from 'preact/hooks';
 import htm from 'htm';
 import { RW } from './rw-lib.js';
+import RewairAPI from './rw-api.js';
 import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
 
 (function (RW) {
@@ -146,6 +147,104 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
       </div>`;
   }
 
+  function MQTTModal({ initial, onClose, onSaved }) {
+    const [cfg, setCfg] = useState(() => Object.assign({
+      enabled: false, host: '', port: 1883, username: '', password: '',
+      password_set: false, topic_prefix: '', discovery: true,
+      discovery_prefix: 'homeassistant'
+    }, initial || {}));
+    const [clearPassword, setClearPassword] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const [err, setErr] = useState(null);
+    const patch = (key, value) => setCfg((old) => Object.assign({}, old, { [key]: value }));
+
+    const save = () => {
+      const host = cfg.host.trim();
+      const port = Number(cfg.port);
+      if (cfg.enabled && !host) { setErr('Enter the MQTT broker host or IP address.'); return; }
+      if (!Number.isInteger(port) || port < 1 || port > 65535) { setErr('Port must be between 1 and 65535.'); return; }
+
+      const payload = {
+        enabled: !!cfg.enabled,
+        host,
+        port,
+        username: cfg.username.trim(),
+        topic_prefix: cfg.topic_prefix.trim(),
+        discovery: !!cfg.discovery,
+        discovery_prefix: cfg.discovery_prefix.trim() || 'homeassistant'
+      };
+      if (clearPassword) payload.password = '';
+      else if (cfg.password) payload.password = cfg.password;
+
+      setSaving(true); setErr(null);
+      RewairAPI.setMQTT(payload).then((next) => {
+        setSaving(false);
+        onSaved(next);
+        onClose();
+      }, (e) => { setSaving(false); setErr(e.message); });
+    };
+
+    return html`
+      <div class="overlay" onClick=${(e) => !saving && e.target.classList.contains('overlay') && onClose()}>
+        <div class="modal mqtt-modal" role="dialog" aria-label="MQTT and Home Assistant">
+          <div class="modal-head"><h2>MQTT & Home Assistant</h2>
+            ${!saving && html`<button class="modal-x" onClick=${onClose}>✕</button>`}</div>
+          <div class="modal-body">
+            <div class="mqtt-status ${cfg.connected ? 'online' : ''}">
+              <span class="dot"></span>
+              <span>${cfg.connected ? `Connected to ${cfg.host}:${cfg.port}`
+                : cfg.enabled ? (cfg.last_error || 'Waiting to connect') : 'MQTT is off'}</span>
+            </div>
+
+            <label class="mqtt-check">
+              <input type="checkbox" checked=${cfg.enabled}
+                onChange=${(e) => patch('enabled', e.target.checked)} />
+              <span><strong>Enable MQTT</strong><small>Publish this monitor's readings to a local broker.</small></span>
+            </label>
+
+            <div class="mqtt-grid">
+              <label class="mqtt-field wide"><span>Broker host or IP</span>
+                <input class="field" autocomplete="off" value=${cfg.host}
+                  onInput=${(e) => patch('host', e.target.value)} placeholder="homeassistant.local" /></label>
+              <label class="mqtt-field"><span>Port</span>
+                <input class="field" type="number" min="1" max="65535" value=${cfg.port}
+                  onInput=${(e) => patch('port', e.target.value)} /></label>
+              <label class="mqtt-field"><span>Username</span>
+                <input class="field" autocomplete="username" value=${cfg.username}
+                  onInput=${(e) => patch('username', e.target.value)} /></label>
+              <label class="mqtt-field"><span>Password</span>
+                <input class="field" type="password" autocomplete="current-password" value=${cfg.password}
+                  disabled=${clearPassword} onInput=${(e) => patch('password', e.target.value)}
+                  placeholder=${cfg.password_set ? 'Saved — blank keeps it' : 'Optional'} /></label>
+            </div>
+            ${cfg.password_set && html`<label class="mqtt-clear"><input type="checkbox" checked=${clearPassword}
+              onChange=${(e) => setClearPassword(e.target.checked)} /> Clear the saved password</label>`}
+
+            <div class="mqtt-advanced">
+              <label class="mqtt-field"><span>State topic prefix <small>blank = automatic</small></span>
+                <input class="field" autocomplete="off" value=${cfg.topic_prefix}
+                  onInput=${(e) => patch('topic_prefix', e.target.value)} placeholder="rewair/device-id" /></label>
+              <label class="mqtt-check compact">
+                <input type="checkbox" checked=${cfg.discovery}
+                  onChange=${(e) => patch('discovery', e.target.checked)} />
+                <span><strong>Home Assistant discovery</strong><small>Creates all seven sensor entities automatically.</small></span>
+              </label>
+              ${cfg.discovery && html`<label class="mqtt-field"><span>Discovery prefix</span>
+                <input class="field" autocomplete="off" value=${cfg.discovery_prefix}
+                  onInput=${(e) => patch('discovery_prefix', e.target.value)} /></label>`}
+            </div>
+
+            <p class="mqtt-note">Uses MQTT 3.1.1 over local TCP. TLS is not available in this firmware build, so keep the broker on a trusted network.</p>
+            ${err && html`<span class="modal-err">${err}</span>`}
+            <div class="join-actions">
+              <button class="btn" disabled=${saving} onClick=${onClose}>Cancel</button>
+              <button class="btn primary" disabled=${saving} onClick=${save}>${saving ? 'Saving…' : 'Save MQTT settings'}</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
   /* ---------- the one row component ---------- */
   /* editable rows: whole row clickable + chevron ('rows' model) */
   function Row({ id, name, sub, ctrl, editor, below, open, setOpen }) {
@@ -179,7 +278,17 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
     const [open, setOpen] = useState(null);
     const [fwOpen, setFwOpen] = useState(false);
     const [resetOpen, setResetOpen] = useState(false);
+    const [mqttOpen, setMqttOpen] = useState(false);
+    const [mqtt, setMqtt] = useState(null);
     const now = RW.deviceNow(status);
+
+    useEffect(() => {
+      let alive = true;
+      const load = () => RewairAPI.mqtt().then((value) => alive && setMqtt(value), () => {});
+      load();
+      const timer = setInterval(load, 5000);
+      return () => { alive = false; clearInterval(timer); };
+    }, []);
 
     const tzSub = st.tz_offset == null ? 'Not set'
       : direct
@@ -222,6 +331,13 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
           ctrl=${direct ? html`<${TzSelect} st=${st} onPatch=${onPatch} />` : html`<span class="set-val">${RW.fmtOffset(st.tz_offset)}</span>`}
           editor=${direct ? null : (close) => html`<${TzEditor} st=${st} onPatch=${onPatch} close=${close} />`} />
 
+        <${Row} id="mqtt" name="MQTT & Home Assistant"
+          sub=${mqtt ? (mqtt.connected ? `Connected to ${mqtt.host}:${mqtt.port}`
+            : mqtt.enabled ? (mqtt.last_error || 'Enabled · connecting') : 'Off') : 'Loading…'}
+          open=${open} setOpen=${setOpen}
+          ctrl=${html`${mqtt && mqtt.connected && html`<span class="badge on">Connected</span>`}
+            <button class="btn" onClick=${stopBtn(() => setMqttOpen(true))}>Configure…</button>`} />
+
         <${Row} id="fw" name="Firmware" open=${open} setOpen=${setOpen}
           ctrl=${html`<span class="set-val">${status.fw}</span>
             <button class="btn" onClick=${stopBtn(() => setFwOpen(true))}>Update…</button>`} />
@@ -233,6 +349,7 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
       </div></section>
 
       ${fwOpen && html`<${RW.FirmwareModal} status=${status} refresh=${refresh} onClose=${() => setFwOpen(false)} />`}
+      ${mqttOpen && html`<${MQTTModal} initial=${mqtt} onSaved=${setMqtt} onClose=${() => setMqttOpen(false)} />`}
       ${resetOpen && html`<${RW.ResetModal} refresh=${refresh} onClose=${() => setResetOpen(false)} />`}`;
   };
 })(RW);

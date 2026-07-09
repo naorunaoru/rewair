@@ -360,6 +360,32 @@ select.field.quiet { appearance: none; -webkit-appearance: none; width: auto; ma
 .fw-note { font-size: 12.5px; line-height: 1.5; color: var(--muted); text-align: center; margin-top: 16px; }
 .reset-warn { font-size: 13.5px; line-height: 1.55; color: var(--muted); margin: 2px 0 18px; }
 
+/* ---------- MQTT / Home Assistant ---------- */
+.mqtt-modal { width: min(560px, calc(100vw - 28px)); }
+.mqtt-status { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; background: color-mix(in oklab, var(--ink) 5%, transparent); color: var(--muted); font-size: 12.5px; margin-bottom: 15px; }
+.mqtt-status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.mqtt-status.online { color: var(--ink); background: color-mix(in oklab, var(--green) 10%, transparent); }
+.mqtt-status.online .dot { background: var(--green); }
+.mqtt-check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; padding: 4px 0 13px; }
+.mqtt-check input { margin-top: 3px; accent-color: var(--green); }
+.mqtt-check span { display: flex; flex-direction: column; gap: 2px; }
+.mqtt-check strong { font-size: 13.5px; font-weight: 650; }
+.mqtt-check small, .mqtt-field small { color: var(--muted); font-size: 11.5px; font-weight: 400; }
+.mqtt-check.compact { padding: 4px 0; }
+.mqtt-grid { display: grid; grid-template-columns: 1fr 120px; gap: 11px; }
+.mqtt-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.mqtt-field > span { color: var(--muted); font-size: 11.5px; font-weight: 600; }
+.mqtt-field .field { width: 100%; }
+.mqtt-field.wide { grid-column: 1; }
+.mqtt-clear { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11.5px; margin-top: 8px; cursor: pointer; }
+.mqtt-advanced { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--line); margin-top: 15px; padding-top: 14px; }
+.mqtt-note { color: var(--muted); font-size: 11.5px; line-height: 1.45; margin: 14px 0; }
+
+@media (max-width: 520px) {
+  .mqtt-grid { grid-template-columns: 1fr; }
+  .mqtt-field.wide { grid-column: auto; }
+}
+
 /* ---------- footer ---------- */
 .foot { margin-top: 28px; text-align: center; font-size: 11.5px; color: var(--faint); }
 
