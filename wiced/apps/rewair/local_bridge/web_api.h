@@ -12,6 +12,7 @@
 
 wiced_result_t rewair_web_api_start( wiced_interface_t interface );
 wiced_result_t rewair_web_api_stop( void );
+uint32_t rewair_web_api_is_started( void );
 
 /* Force-closes the TCP connection backing `stream`. Used by web_ui.c when a
  * response's framing is already unrecoverable (e.g. Content-Length was sent
@@ -33,17 +34,3 @@ void rewair_web_api_disconnect_stream( wiced_http_response_stream_t* stream );
  * pure move out of local_bridge.c): sensor_send_disp_mode,
  * sensor_apply_manual_time, sensor_set_tz_rule, send_time_context.
  * web_api.c includes rewair_frames.h directly for these. */
-
-/* External SPI flash bring-up (Phase 2 Task 1). Both return 0 on success.
- * rewair_sflash_bounds_ok MUST be checked (addr, len) before read_bytes --
- * the driver's 24-bit address silently wraps past the 2 MiB device instead
- * of erroring. */
-int rewair_sflash_read_id( uint8_t out_id[3] );
-int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size );
-int rewair_sflash_bounds_ok( uint32_t addr, uint32_t len );
-
-/* Lazily initializes the sflash driver handle (idempotent, mutex-guarded).
- * Both rewair_sflash_read_id/read_bytes already call this internally, but
- * web_ui.c calls it explicitly up front so it can log a clear failure before
- * attempting rewair_uifs_init (Phase 2 Task 5). Returns 0 on success. */
-int rewair_sflash_ensure_init( void );

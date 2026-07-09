@@ -20,6 +20,9 @@
 #include "wwd_rtos_isr.h"
 #include "wiced_defaults.h"
 #include "wiced_platform.h"
+#ifdef BOOTLOADER
+#include "rewair_ota_boot.h"
+#endif
 
 /******************************************************
  *                      Macros
@@ -296,10 +299,18 @@ void platform_init_external_devices( void )
 /* Checks if a factory reset is requested */
 wiced_bool_t platform_check_factory_reset( void )
 {
+#ifdef BOOTLOADER
+    /* Rewair uses the WAF bootloader slot for a power-loss-safe raw application
+     * copier. It returns false so the stock button-driven factory-reset path is
+     * still disabled on the Awair hardware, whose inherited aliases overlap the
+     * UART pins. */
+    return rewair_ota_boot_check( );
+#else
     /* The inherited EMW3165 factory-reset button and LED aliases overlap Awair
      * UART pins, so probing them can break boot or the debug console.
      */
     return WICED_FALSE;
+#endif
 }
 /******************************************************
  *           Interrupt Handler Definitions

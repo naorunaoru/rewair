@@ -28,6 +28,9 @@
 #include "rewair_wifi_scan.h"
 #include "rewair_wifi_join.h"
 #include "rewair_console.h"
+#include "rewair_ota.h"
+#include "rewair_ota_layout.h"
+#include "rewair_sflash.h"
 #include "web_api.h"
 #include "rewair_net_mode.h"
 #include "spi_flash.h"
@@ -142,11 +145,12 @@ static volatile uint32_t wifi_network_ready_ms = 0u;
  * application_start's DST-recheck loop below reads them directly. */
 static rewair_settings_t current_settings;
 
-/* ---- External SPI flash (Macronix MX25L1606E) -- Phase 2 Task 1 bring-up ----
+/* ---- External SPI flash (Macronix MX25L1606E) -- UI reads + OTA writes ----
  * Lazily initialized on first use by either the console "sflash" commands or
  * the /api/debug/sflash route (web_api.c); both share this handle so the SPI
- * peripheral is only brought up once. Read-only for now: write_allowed is
- * SFLASH_WRITE_NOT_ALLOWED until a later task explicitly needs writes. */
+ * peripheral is only brought up once. OTA enables the driver's write path,
+ * but the public wrappers permanently reject every write at or above the
+ * 0x1c0000 RWFS UI boundary. */
 static sflash_handle_t rewair_sflash_handle;
 static uint32_t         rewair_sflash_inited = 0u;
 
@@ -154,7 +158,7 @@ static uint32_t         rewair_sflash_inited = 0u;
  * take a 24-bit device address and silently wrap past this -- addr+len must
  * be checked by every caller (console commands and the debug route) before
  * ever reaching the driver. */
-#define REWAIR_SFLASH_CAPACITY 0x200000u
+#define REWAIR_SFLASH_CAPACITY REWAIR_OTA_SFLASH_CAPACITY
 
 /* Returns 1 if [addr, addr+len) fits within the device, 0 otherwise. Also
  * catches the addr+len overflow case (len so large it wraps uint32_t). */
@@ -181,7 +185,7 @@ static int rewair_sflash_ensure_init_locked( void )
     {
         return 0;
     }
-    if ( init_sflash( &rewair_sflash_handle, NULL, SFLASH_WRITE_NOT_ALLOWED ) != 0 )
+    if ( init_sflash( &rewair_sflash_handle, NULL, SFLASH_WRITE_ALLOWED ) != 0 )
     {
         printf( "[sflash] init_sflash failed\n" );
         return -1;
@@ -229,15 +233,16 @@ int rewair_sflash_read_id( uint8_t out_id[3] )
     return 0;
 }
 
-/* Returns 0 on success, nonzero on failure. Callers MUST bounds-check addr+len
- * against REWAIR_SFLASH_CAPACITY (rewair_sflash_bounds_ok) before calling --
- * this function does not re-check, since both current callers (console
- * command and the dev-gated debug route) already cap len <= 256 and validate
- * addr themselves, and the driver's 24-bit address silently wraps rather than
- * erroring. */
+/* Returns 0 on success, nonzero on failure. Bounds are enforced here even
+ * though the console and web callers also validate their smaller requests. */
 int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size )
 {
     int rc;
+
+    if ( out == NULL || rewair_sflash_bounds_ok( addr, size ) == 0 )
+    {
+        return -1;
+    }
 
     wiced_rtos_lock_mutex( &sflash_mutex );
     rc = rewair_sflash_ensure_init_locked( );
@@ -248,6 +253,48 @@ int rewair_sflash_read_bytes( uint32_t addr, uint8_t* out, uint32_t size )
     wiced_rtos_unlock_mutex( &sflash_mutex );
 
     return ( rc == 0 ) ? 0 : -1;
+}
+
+int rewair_sflash_write_bytes( uint32_t addr, const uint8_t* data, uint32_t size )
+{
+    int rc;
+
+    if ( data == NULL || rewair_sflash_bounds_ok( addr, size ) == 0 ||
+         addr >= REWAIR_OTA_UI_ADDR || size > REWAIR_OTA_UI_ADDR - addr )
+    {
+        return -1;
+    }
+    wiced_rtos_lock_mutex( &sflash_mutex );
+    rc = rewair_sflash_ensure_init_locked( );
+    if ( rc == 0 )
+    {
+        rc = sflash_write( &rewair_sflash_handle, (unsigned long)addr, data,
+                           (unsigned int)size );
+    }
+    wiced_rtos_unlock_mutex( &sflash_mutex );
+    return rc == 0 ? 0 : -1;
+}
+
+int rewair_sflash_erase_range( uint32_t addr, uint32_t size )
+{
+    uint32_t offset;
+    int rc;
+
+    if ( rewair_sflash_bounds_ok( addr, size ) == 0 ||
+         ( addr & ( REWAIR_OTA_SFLASH_SECTOR_SIZE - 1u ) ) != 0u ||
+         ( size & ( REWAIR_OTA_SFLASH_SECTOR_SIZE - 1u ) ) != 0u ||
+         addr >= REWAIR_OTA_UI_ADDR || size > REWAIR_OTA_UI_ADDR - addr )
+    {
+        return -1;
+    }
+    wiced_rtos_lock_mutex( &sflash_mutex );
+    rc = rewair_sflash_ensure_init_locked( );
+    for ( offset = 0u; rc == 0 && offset < size; offset += REWAIR_OTA_SFLASH_SECTOR_SIZE )
+    {
+        rc = sflash_sector_erase( &rewair_sflash_handle, addr + offset );
+    }
+    wiced_rtos_unlock_mutex( &sflash_mutex );
+    return rc == 0 ? 0 : -1;
 }
 
 /* network_after_ip_ready's forward declaration removed (Phase 2 Task 10):
@@ -973,6 +1020,7 @@ void application_start( void )
 {
     wiced_result_t result;
 
+    rewair_ota_trial_watch_start( );
     sensor_reset_release_early( );
 
     WPRINT_WICED_INFO( ( "\nStarting WICED v" WICED_VERSION "\n" ) );

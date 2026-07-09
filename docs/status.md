@@ -1,6 +1,6 @@
 # Rewair Status
 
-Date: 2026-07-07.
+Date: 2026-07-09.
 
 ## Hardware
 
@@ -48,8 +48,14 @@ Date: 2026-07-07.
   asynchronously (~1 s); `/api/reset` clears credentials and reboots back
   into the setup AP. See the README's [AP Setup
   Mode](../README.md#ap-setup-mode) section.
-- 7 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
-  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`), all
+- F411 OTA is implemented through the portal: guarded firmware-side SPI
+  writes, chunked upload/readback verification, boot-time known-good backup,
+  idempotent internal-flash copy, and three-attempt trial rollback. It builds
+  within both flash regions and has host tests; the bench power-loss gauntlet
+  in `docs/ota.md` remains pending.
+- 8 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
+  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
+  `test_ota`), all
   passing against a clean `make -C tests/host`.
 - `scripts/api_smoke.zsh`: 20-check smoke test against a live device,
   covering both the web API and the sflash-served UI.
@@ -151,6 +157,9 @@ scripts/flash_webui.zsh
 
 (`flash_webui.zsh` already runs `npm run build` itself; the manual `npm ci`
 step above is only needed the first time, to install dependencies.)
+
+After the one-time OTA bootloader bootstrap, subsequent F411 updates can be
+installed from Settings → Firmware in that web UI. See `docs/ota.md`.
 
 Run the host test suites:
 

@@ -16,6 +16,7 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_wifi_scan.c \
                    rewair_wifi_join.c \
                    rewair_net_mode.c \
+                   rewair_ota.c \
                    rewair_console.c \
                    jsmn.c \
                    web_api.c \

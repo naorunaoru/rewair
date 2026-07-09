@@ -42,16 +42,19 @@ What's inside of the Element?
   - `rewair_drops`: dropped-frame counters.
   - `rewair_uifs`: reader for the packed web-UI image format (RWFS) on
     external SPI flash; host-testable, no WICED includes.
+  - `rewair_ota`: chunked upload, staged-image verification, and trial-boot
+    confirmation for F411 OTA. See [F411 firmware OTA](docs/ota.md).
   - `web_api.c`/`.h`: HTTP page database, all `/api/...` JSON routes, and
     Server-Sent Events.
   - `web_ui.c`/`.h`: serves the web UI (`/`, `/app.js`, `/rewair.css`) out of
     the RWFS image in external flash, with a small built-in fallback page.
 - `wiced/platforms/AWAIR`: Awair/EMW3165 WICED platform pin map, including the
-  external SPI flash pin mapping.
+  external SPI flash pin mapping and the power-loss-safe OTA boot copier.
 - `webui/`: the web UI itself — Preact + htm, built with Vite, plain
   npm (no framework CLI). See [Web UI](#web-ui) below.
-- `tests/host/`: 7 host-buildable test suites (`test_drops`, `test_tz`,
-  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`) that
+- `tests/host/`: 8 host-buildable test suites (`test_drops`, `test_tz`,
+  `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
+  `test_ota`) that
   compile the relevant `rewair_*.c` files directly with the system `cc`, no
   WICED/ARM toolchain required.
 - `scripts`:
@@ -217,9 +220,10 @@ which is wired differently):
 
 Rewair owns the top 256 KiB (`0x1C0000`-`0x1FFFFF`) for the packed web UI
 image (RWFS format — see `wiced/apps/rewair/local_bridge/rewair_uifs.h` and
-the packer at `webui/scripts/pack-rwfs.mjs`). The address space below
-`0x1C0000` holds the stock WLAN firmware blob and other factory-programmed
-content; `flash_sflash_openocd.zsh` refuses to write there unless `FORCE=1`.
+the packer at `webui/scripts/pack-rwfs.mjs`). F411 OTA uses `0x000000`–
+`0x100FFF` for staging, a known-good backup, and its state journal. The
+firmware write guard rejects every write touching the UI region. See
+[docs/ota.md](docs/ota.md) for the exact map and rollback behavior.
 
 Console commands (over the serial debug console) and a debug HTTP route
 both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
@@ -233,7 +237,7 @@ REWAIR_IP=<device-ip> scripts/api_smoke.zsh
 ```
 
 Runs 20 checks against a live device: web API status/scan/networks shape,
-POST route validation (400/405/501), SSE, split-packet POST body handling,
+POST route validation (400/405), SSE, split-packet POST body handling,
 and the web UI being served from sflash (`/`, `/app.js`, gzip headers, 404
 on unknown paths).
 
@@ -261,7 +265,7 @@ requests CORS-"simple") in addition to `application/json`.
 | `/api/settings` | POST | Update user settings (name, units, timezone, display mode). |
 | `/api/time` | POST | Set/override the device's wall-clock time. |
 | `/api/disp` | POST | Set the F103 display mode. |
-| `/api/update` | POST | Firmware OTA — not implemented, returns 501. |
+| `/api/update` | POST | Chunked F411 firmware OTA used by the web portal: begin, sequential data chunks, verify/commit, reboot. See [docs/ota.md](docs/ota.md). |
 | `/api/reset` | POST | Clear all saved Wi-Fi credentials and settings, then reboot into AP setup mode. |
 | `/api/debug/sflash` | GET | Debug route (compiled under `REWAIR_API_CORS_DEV`, currently enabled by default — see `web_api.h`) raw SPI-flash readback for debugging. |
 | `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image in external flash (or a small built-in fallback page for `/` if no image is flashed yet). |
@@ -308,8 +312,9 @@ joined).
 
 ## Current State
 
-Both the web API and the self-contained web UI (served from the device's own
-SPI flash) are working end to end. The F103 sensor board's `SENS` stream
+The web API, self-contained UI, AP setup portal, and F411 OTA implementation
+are built and host-verified; OTA's destructive power-loss/rollback gauntlet is
+still a bench checkpoint. The F103 sensor board's `SENS` stream
 still occasionally stalls after `REDY`/`TEST` on boot — intermittent, not
 fully root-caused. See [docs/status.md](docs/status.md) for the current
 detailed state and diagnostics.
