@@ -79,8 +79,8 @@ endif
 # APP1 :=
 # APP2 :=
 
-# WICED apps lookup table and BCM43362A2 image.  Sectors below 0x101 are
-# owned by the custom OTA stage/backup/journal; 0x1c0 and above hold RWFS.
+# WICED apps lookup table and BCM43362A2 image. Sectors below 0x101 are
+# owned by the custom OTA stage/backup/journal; 0x136 and above are free.
 APPS_LUT_HEADER_LOC := 0x101000
 APPS_START_SECTOR := 258
 

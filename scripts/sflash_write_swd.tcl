@@ -17,7 +17,7 @@
 #           -f target/stm32f4x.cfg \
 #           -f scripts/sflash_write_swd.tcl \
 #           -c "sflash_stub_elf \"<path-to-waf_sflash_write.elf>\"" \
-#           -c "sflash_write_file \"<image.bin>\" 0x1c0000" \
+#           -c "sflash_write_file \"<image.bin>\" 0x136000" \
 #           -c "shutdown"
 #
 # Reading back is left to the firmware's own console `sflash read` / the

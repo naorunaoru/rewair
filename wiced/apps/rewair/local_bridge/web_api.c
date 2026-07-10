@@ -1565,8 +1565,8 @@ static START_OF_HTTP_PAGE_DATABASE( api_pages )
       .url_content.dynamic_data = { api_update_handler, NULL } },
     { "/api/reset",     "text/plain", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_reset_handler, NULL } },
-    /* ---- Web UI (Phase 2 Task 5), served from the RWFS image in external
-     * sflash by web_ui.c. IMPORTANT: the WICED daemon matches
+    /* ---- Web UI, served from the RWFS image linked into internal flash by
+     * web_ui.c. IMPORTANT: the WICED daemon matches
      * WICED_RAW_DYNAMIC_URL_CONTENT entries by strncasecmp() against the
      * request URL truncated to strlen(entry.url) -- i.e. a PREFIX match --
      * and stops at the first match in table order. "/" is a prefix of every

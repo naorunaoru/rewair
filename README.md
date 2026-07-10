@@ -12,7 +12,7 @@ What's inside of the Element?
 - MXCHIP EMW3165 — WiFi module (has STM32F411 + Broadcom WiFi inside, the main interest of this repo)
 - a bunch of sensors (Telaire T6703, Sharp GP2Y10, FIS QS-01, SHT30)
 - Macronix MX25L1606E — 2 MiB external SPI flash on the EMW3165 board, used
-  by Rewair to store the web UI (see [SPI Flash](#spi-flash) below)
+  by Rewair for OTA staging/rollback and the external WLAN firmware
 
 ## Repository Layout
 
@@ -48,14 +48,14 @@ What's inside of the Element?
   - `rewair_ble` / `rewair_ble_proto`: production BI201 UART driver plus the
     framed, CRC-protected BLE API transport. USART1 is dedicated to the BI201.
   - `rewair_drops`: dropped-frame counters.
-  - `rewair_uifs`: reader for the packed web-UI image format (RWFS) on
-    external SPI flash; host-testable, no WICED includes.
+  - `rewair_uifs`: storage-agnostic reader for the packed web-UI image format
+    (RWFS); host-testable, no WICED includes.
   - `rewair_ota`: chunked upload, staged-image verification, and trial-boot
     confirmation for F411 OTA. See [F411 firmware OTA](docs/ota.md).
   - `web_api.c`/`.h`: HTTP page database, all `/api/...` JSON routes, and
     Server-Sent Events.
   - `web_ui.c`/`.h`: serves the web UI (`/`, `/app.js`, `/rewair.css`) out of
-    the RWFS image in external flash, with a small built-in fallback page.
+    the RWFS image linked into the F411 application, with a small fallback page.
 - `wiced/platforms/AWAIR`: Awair/EMW3165 WICED platform pin map, including the
   external SPI flash pin mapping and the power-loss-safe OTA boot copier.
 - `webui/`: the web UI itself — Preact + htm, built with Vite, plain
@@ -71,10 +71,8 @@ What's inside of the Element?
   - `build_local_bridge.zsh`: syncs, then builds the local_bridge firmware.
   - `flash_local_bridge_probe_rs.zsh`: flashes bootloader+app over SWD via
     probe-rs, preserving DCT by default.
-  - `flash_sflash_openocd.zsh`: writes a raw image to the external SPI flash
-    via OpenOCD + the WICED sflash-write stub, with readback verification.
-  - `flash_webui.zsh`: builds the web UI and flashes it to the UI region of
-    external flash (wraps the two scripts above).
+  - `flash_sflash_openocd.zsh`: writes a raw image to unallocated external SPI
+    flash via OpenOCD + the WICED sflash-write stub, with readback verification.
   - `sflash_write_swd.tcl`: OpenOCD Tcl driver for the sflash stub protocol
     (SWD/CMSIS-DAP reimplementation of the WICED SDK's JTAG-only version).
   - `api_smoke.zsh`: curl+jq smoke test against a live device's web API and UI.
@@ -112,9 +110,9 @@ tracked here.
 - **probe-rs** (`brew install probe-rs` or see
   <https://probe.rs/docs/getting-started/installation/>) — used for
   firmware flashing and to reset the target after an sflash write.
-- **OpenOCD 0.12+ from brew** (`brew install openocd`) — used only for the
-  external SPI flash write path (`flash_sflash_openocd.zsh` /
-  `flash_webui.zsh`). The WICED SDK's own vendored OpenOCD is a 2015 JTAG-only
+- **OpenOCD 0.12+ from brew** (`brew install openocd`) — used only for direct
+  external SPI flash provisioning (`flash_sflash_openocd.zsh` and the WLAN
+  firmware helper). The WICED SDK's own vendored OpenOCD is a 2015 JTAG-only
   build that does not speak CMSIS-DAP/SWD, so it cannot be used for this step.
 - **Node.js >= 18 and npm** (`brew install node`, or nvm) — used to build the
   web UI.
@@ -145,8 +143,9 @@ that touch the SDK honor this).
 scripts/build_local_bridge.zsh
 ```
 
-This syncs `wiced/apps/rewair` and `wiced/platforms/AWAIR` into the external
-SDK, then builds:
+This installs the locked web dependencies on first use, builds and packs the
+RWFS web UI, syncs `wiced/apps/rewair` and `wiced/platforms/AWAIR` into the
+external SDK, then builds:
 
 ```text
 rewair.local_bridge-AWAIR-FreeRTOS-LwIP-SDIO
@@ -167,10 +166,11 @@ FLASH_DCT=1 scripts/flash_local_bridge_probe_rs.zsh
 
 ## Web UI
 
-The web UI (`webui/`) is a small Preact app, built with Vite, that talks to
-the device over HTTP or Web Bluetooth. It ships from this repo unbuilt; you
-can flash the result to the device's external SPI flash or publish `dist/` on
-an HTTPS static host for BLE access before the device has Wi-Fi.
+The web UI (`webui/`) is a small Preact app, built with Vite, that talks to the
+device over HTTP or Web Bluetooth. The production RWFS bundle is linked into
+the F411 application and therefore ships in the same SWD/OTA firmware image.
+The `dist/` directory can also be published on an HTTPS static host for BLE
+access before the device has Wi-Fi.
 
 Local preview against a live device, no flashing required:
 
@@ -210,21 +210,10 @@ cd webui
 npm run build
 ```
 
-This runs `vite build` then packs `dist/` into `webui/webui.rwfs` (see
-[SPI Flash](#spi-flash)).
-
-Flash it to the device:
-
-```sh
-scripts/flash_webui.zsh
-```
-
-This builds the UI and writes `webui.rwfs` to the UI region of external SPI
-flash via OpenOCD. **Stop any running `probe-rs` session first** — OpenOCD and
-probe-rs cannot share the debug probe at the same time, and the script
-refuses to proceed if it detects a `probe-rs` process running. It resets the
-target back to the normal application (via probe-rs) once the OpenOCD session
-ends, then polls the device's `/api/status` to confirm it rejoined Wi-Fi.
+This runs `vite build` then packs `dist/` into `webui/webui.rwfs`. A normal
+`scripts/build_local_bridge.zsh` invocation performs this step automatically,
+copies the deterministic RWFS image into the WICED build, and links it as an
+in-memory resource. There is no separate UI flash operation.
 
 Once flashed, open `http://<device-ip>/` in a browser — the device serves the
 UI itself, same-origin, no dev server needed.
@@ -242,12 +231,11 @@ which is wired differently):
 | MISO | PB4 |
 | SCK  | PB3 |
 
-Rewair owns the top 256 KiB (`0x1C0000`-`0x1FFFFF`) for the packed web UI
-image (RWFS format — see `wiced/apps/rewair/local_bridge/rewair_uifs.h` and
-the packer at `webui/scripts/pack-rwfs.mjs`). F411 OTA uses `0x000000`–
-`0x100FFF` for staging, a known-good backup, and its state journal. The
-firmware write guard rejects every write touching the UI region. See
-[docs/ota.md](docs/ota.md) for the exact map and rollback behavior.
+F411 OTA uses `0x000000`–`0x100FFF` for staging, a known-good backup, and its
+state journal. The WICED apps lookup table and WLAN firmware occupy
+`0x101000`–`0x135FFF`; `0x136000`–`0x1FFFFF` is reserved/free. The web UI no
+longer occupies external flash. See [docs/ota.md](docs/ota.md) for the exact
+map and rollback behavior.
 
 Console commands (over the serial debug console) and a debug HTTP route
 both expose raw readback: `GET /api/debug/sflash?addr=<hex>&len=<n<=256>`
@@ -262,7 +250,7 @@ REWAIR_IP=<device-ip> scripts/api_smoke.zsh
 
 Runs 21 checks against a live device: web API status/scan/networks/MQTT shape,
 POST route validation (400/405), SSE, split-packet POST body handling,
-and the web UI being served from sflash (`/`, `/app.js`, gzip headers, 404
+and the embedded web UI (`/`, `/app.js`, gzip headers, 404
 on unknown paths).
 
 Known flake: the split-packet POST-body check (`scripts/check_post_body.py`)
@@ -298,7 +286,7 @@ status semantics.
 | `/api/update` | POST | Chunked F411 firmware OTA used by the web portal: begin, sequential data chunks, verify/commit, reboot. See [docs/ota.md](docs/ota.md). |
 | `/api/reset` | POST | Clear all saved Wi-Fi credentials and settings, then reboot into AP setup mode. |
 | `/api/debug/sflash` | GET | Debug route (compiled under `REWAIR_API_CORS_DEV`, currently enabled by default — see `web_api.h`) raw SPI-flash readback for debugging. |
-| `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image in external flash (or a small built-in fallback page for `/` if no image is flashed yet). |
+| `/`, `/app.js`, `/rewair.css` | GET | The web UI itself, served from the RWFS image embedded in the F411 application (or a small fallback page if its integrity check fails). |
 
 ## AP Setup Mode
 

@@ -5,7 +5,7 @@
 #include "http_server.h"
 
 /* Serves the web UI (index.html/app.js/rewair.css) out of the RWFS packed
- * image stored in external SPI flash at REWAIR_UI_IMAGE_BASE. Call
+ * image linked into the F411 application as an in-memory resource. Call
  * web_ui_init() once before wiced_http_server_start() so the page-database
  * entries below have a valid (or intentionally-fallback) rewair_uifs_t to
  * read from.
@@ -18,6 +18,7 @@
  * MUST be registered after every "/api/..." (and "/app.js", "/rewair.css")
  * entry in api_pages[], or it would swallow all of them. */
 void web_ui_init( void );
+uint32_t web_ui_is_valid( void );
 
 /* Toggles captive-portal mode for the root handler. When on, every path that
  * does not exactly match "/" (or "/?...") is answered with a 302 redirect to

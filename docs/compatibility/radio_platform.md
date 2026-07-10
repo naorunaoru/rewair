@@ -15,7 +15,7 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
   (F103 frame codec), `rewair_wifi_dct`/`rewair_wifi_scan`/`rewair_wifi_join`,
   `rewair_console`, `rewair_score`, `rewair_walltime`, `rewair_fmt`
   (string/IP/MAC/SSID formatting), `rewair_json` (with vendored `jsmn.c`/`jsmn.h`),
-  `rewair_drops`, `rewair_uifs` (RWFS reader for the external-sflash-hosted UI image),
+  `rewair_drops`, `rewair_uifs` (storage-agnostic RWFS reader),
   `rewair_net_mode` (pure-STA-or-pure-AP mode state machine: setup-AP bring-up
   via the WICED internal DHCP server and `DNS_redirect` daemon, boot-autojoin
   fallback, self-heal — see the README's [AP Setup
@@ -25,7 +25,7 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
   WICED SDK build, including the external SPI flash pin mapping (see
   [External SPI Flash](#external-spi-flash) below).
 - `webui/`: the web UI (Preact + htm, built with Vite/npm), packed into an
-  RWFS image (`webui/scripts/pack-rwfs.mjs`) for flashing to external sflash.
+  RWFS image (`webui/scripts/pack-rwfs.mjs`) and linked into the F411 app.
 - `tests/host/`: 7 host-buildable test suites covering the WICED-independent
   modules above.
 - `scripts/sync_to_wiced.zsh`: copies the tracked app and platform files into
@@ -34,9 +34,8 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
   `rewair.local_bridge-AWAIR-FreeRTOS-LwIP-SDIO`.
 - `scripts/flash_local_bridge_probe_rs.zsh`: flashes the built image over SWD
   while preserving DCT by default.
-- `scripts/flash_sflash_openocd.zsh` / `scripts/flash_webui.zsh`: write raw
-  images (and specifically the built web UI) to the external SPI flash via
-  OpenOCD; see [External SPI Flash](#external-spi-flash).
+- `scripts/flash_sflash_openocd.zsh`: writes raw images to unallocated external
+  SPI flash via OpenOCD; see [External SPI Flash](#external-spi-flash).
 - `scripts/api_smoke.zsh`: live-device smoke test covering the web API and UI.
 - `tools/legacy/emw3165_sensor_console`: bare-metal fallback console for
   checking the F103 protocol without the WICED stack.
@@ -74,16 +73,13 @@ notes.
 
 Region layout on the 2 MiB device:
 
-- `0x000000`-`0x1BFFFF`: stock WLAN firmware blob and other
-  factory-programmed content. Free for other use if ever needed, but not
-  currently touched by Rewair.
-- `0x1C0000`-`0x1FFFFF` (256 KiB): Rewair's web UI region, holding one packed
-  RWFS image (see `wiced/apps/rewair/local_bridge/rewair_uifs.h` for the
-  on-disk format).
+- `0x000000`-`0x100FFF`: OTA staging, known-good application backup, and journal.
+- `0x101000`-`0x135FFF`: WICED apps lookup table and BCM43362A2 WLAN firmware.
+- `0x136000`-`0x1FFFFF`: reserved/free. The web UI is linked into internal F411
+  flash and no longer consumes an external-flash partition.
 
-Write tooling: `scripts/flash_sflash_openocd.zsh` (generic image writer, used
-directly or wrapped by `scripts/flash_webui.zsh` for the UI build) drives the
-WICED SDK's `waf_sflash_write` RAM stub over OpenOCD/CMSIS-DAP via
+Write tooling: `scripts/flash_sflash_openocd.zsh` drives the WICED SDK's
+`waf_sflash_write` RAM stub over OpenOCD/CMSIS-DAP via
 `scripts/sflash_write_swd.tcl`, then verifies a readback sample against the
 device's `/api/debug/sflash` route. Reads are also available from the serial
 console and via that same dev-gated HTTP route.

@@ -6,6 +6,7 @@
 #include "spi_flash.h"
 #include "rewair_sflash.h"
 #include "web_api.h"
+#include "web_ui.h"
 #include "wiced_management.h"
 
 #define OTA_VERIFY_CHUNK          512u
@@ -157,7 +158,7 @@ static void ota_health_thread_main( uint32_t arg )
     (void)arg;
     while ( elapsed < OTA_TRIAL_TIMEOUT_MS )
     {
-        if ( rewair_web_api_is_started( ) != 0u )
+        if ( rewair_web_api_is_started( ) != 0u && web_ui_is_valid( ) != 0u )
         {
             rewair_ota_record_t latest;
             uint32_t append_address;
