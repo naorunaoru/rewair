@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   BLE_FLAG, BLE_FRAME, BLE_PAYLOAD_MAX, decodeBleFrame, encodeBleFrame,
 } from '../rw-ble-proto.js';
+import { initialHttpTarget } from '../rw-transport-mode.js';
 
 const payload = Uint8Array.from({ length: BLE_PAYLOAD_MAX }, (_, i) => i & 0xff);
 const wire = encodeBleFrame({
@@ -23,5 +24,24 @@ assert.deepEqual(decoded.payload, payload);
 const corrupt = wire.slice(0, -1);
 corrupt[Math.floor(corrupt.length / 2)] ^= 0x40;
 assert.throws(() => decodeBleFrame(corrupt));
+
+assert.deepEqual(
+  initialHttpTarget({ protocol: 'https:', hostname: 'naorunaoru.github.io', search: '' }),
+  { enabled: false, base: '', explicit: false },
+);
+assert.deepEqual(
+  initialHttpTarget({ protocol: 'http:', hostname: 'localhost', search: '' }),
+  { enabled: false, base: '', explicit: false },
+);
+assert.deepEqual(
+  initialHttpTarget({ protocol: 'http:', hostname: '192.168.1.242', search: '' }),
+  { enabled: true, base: '', explicit: false },
+);
+assert.deepEqual(
+  initialHttpTarget({
+    protocol: 'http:', hostname: 'localhost', search: '?device=192.168.1.242',
+  }),
+  { enabled: true, base: 'http://192.168.1.242', explicit: true },
+);
 
 console.log('test_ble OK');
