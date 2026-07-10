@@ -145,7 +145,11 @@ int from_hex( char c, uint8_t* value )
 char hex_nibble( uint8_t value )
 {
     value &= 0xfu;
-    return (char)( value < 10u ? ( '0' + value ) : ( 'A' + value - 10u ) );
+    if ( value < 10u )
+    {
+        return (char)( '0' + (char)value );
+    }
+    return (char)( 'A' + (char)value - 10 );
 }
 
 uint32_t decode_hex_len( const uint8_t* text, int* ok )
