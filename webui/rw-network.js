@@ -78,18 +78,23 @@ import RewairAPI from './rw-api.js';
 
   RW.Manager = function ({ bump, onClose, onAdd, onDetails, refresh }) {
     const [nets, setNets] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [menu, setMenu] = useState(null);
     const [dragSsid, setDragSsid] = useState(null);
     const listRef = useRef();
     const netsRef = useRef([]);
     netsRef.current = nets;
 
-    const load = () => RewairAPI.networks().then(setNets);
-    useEffect(() => { if (!dragSsid) load(); }, [bump]);
+    const load = (scanFirst) => {
+      setLoading(true);
+      const scan = scanFirst ? RewairAPI.scan().catch(() => null) : Promise.resolve();
+      return scan.then(() => RewairAPI.networks()).then(setNets).finally(() => setLoading(false));
+    };
+    useEffect(() => { if (!dragSsid) load(true); }, [bump]);
 
     const multi = nets.length > 1;
-    const act = (fn) => { setMenu(null); fn().then(() => { load(); refresh(); }); };
-    const persistOrder = (order) => RewairAPI.priority(order).then(() => { load(); refresh(); });
+    const act = (fn) => { setMenu(null); fn().then(() => { load(false); refresh(); }); };
+    const persistOrder = (order) => RewairAPI.priority(order).then(() => { load(false); refresh(); });
 
     /* pointer-based drag: live reorder of the in-memory list as you move */
     const startDrag = (e, ssid) => {
@@ -150,7 +155,9 @@ import RewairAPI from './rw-api.js';
           <div class="modal-head"><h2>Saved networks</h2>
             <button class="modal-x" onClick=${onClose}>✕</button></div>
           <div class="modal-body">
-            ${nets.length === 0
+            ${loading
+              ? html`<div class="modal-status"><span class="spinner"></span><span>Scanning for saved networks…</span></div>`
+              : nets.length === 0
               ? html`<div class="mgr-empty">No saved networks yet.</div>`
               : html`
                 <div class="grp">${multi ? 'Priority order · drag to reorder' : 'Saved network'}</div>

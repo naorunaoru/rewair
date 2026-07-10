@@ -459,6 +459,8 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     char text[65];
     int len;
     int got;
+    int got_disp_mode;
+    uint8_t previous_units;
     wiced_utc_time_t now = 0u;
 
     (void)url; (void)arg;
@@ -474,6 +476,7 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     }
 
     rewair_settings_load( &settings );
+    previous_units = settings.units;
 
     got = rewair_req_get_string( body, (uint32_t)len, "name", text, sizeof( settings.name ) );
     if ( got < 0 )
@@ -528,6 +531,7 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     }
 
     got = rewair_req_get_string( body, (uint32_t)len, "disp_mode", text, sizeof( text ) );
+    got_disp_mode = got;
     if ( got == 1 )
     {
         if ( strcmp( text, "score" ) == 0 )
@@ -564,12 +568,6 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
             return 0;
         }
 
-        /* All fields validated -- now apply side effects and persist. */
-        if ( got == 1 )
-        {
-            (void)sensor_send_disp_mode( text );
-        }
-
         if ( got_posix == 1 )
         {
             strncpy( settings.tz_posix, tz_posix, sizeof( settings.tz_posix ) - 1u );
@@ -594,6 +592,18 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
 
     rewair_settings_save( &settings );
     rewair_settings_apply_to_state( &settings );
+    if ( got_disp_mode == 1 ||
+         ( settings.units != previous_units && settings.disp_mode == 2u ) )
+    {
+        const char* display_mode = settings.disp_mode == 0u ? "score" :
+                                   settings.disp_mode == 1u ? "clock" : "sensors";
+
+        /* sensor_send_disp_mode("sensors") snapshots the shared unit setting
+         * to choose temp_humid_c vs temp_humid_f, so state must be updated
+         * before the F103 command is emitted. A unit-only change also needs
+         * this refresh while the aggregate Sensors mode remains selected. */
+        (void)sensor_send_disp_mode( display_mode );
+    }
     api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
     return 0;
 }
