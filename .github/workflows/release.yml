@@ -49,6 +49,7 @@ jobs:
         env:
           SDK_DIR: ${{ github.workspace }}/third_party/wiced-emw3165
           HOST_OS: Linux64
+          REWAIR_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: scripts/build_local_bridge.zsh
 
       - name: Package release assets
@@ -56,7 +57,7 @@ jobs:
           SDK_DIR: ${{ github.workspace }}/third_party/wiced-emw3165
           HOST_OS: Linux64
           OUTPUT_DIR: ${{ github.workspace }}/build/release
-          VERSION: ${{ github.ref_name }}
+          REWAIR_RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           SOURCE_REVISION: ${{ github.sha }}
           SDK_REVISION: ${{ env.WICED_SDK_REVISION }}
         run: scripts/package_release.zsh

@@ -178,10 +178,17 @@ contains a build-generated MAC address; it must not be installed unchanged on
 multiple units. The authoritative addresses and install sets are recorded in
 the release manifest rather than duplicated in the web app.
 
+`wiced/apps/rewair/local_bridge/rewair_version.h` is the version source of
+truth. Normal local builds append `-dev`. Release CI requires the tag to match
+that header exactly (`0.7.0` requires tag `v0.7.0`) and embeds the release
+version without the suffix. Packaging also checks that the expected version
+string is present in the application binary before publishing it in
+`manifest.json` for the web flasher.
+
 To assemble the same bundle locally after a firmware build:
 
 ```sh
-VERSION=dev scripts/package_release.zsh
+scripts/package_release.zsh
 ```
 
 ## Web UI

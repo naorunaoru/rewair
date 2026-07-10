@@ -6,6 +6,16 @@ SDK_DIR="${SDK_DIR:-$repo_root/../third_party/wiced-emw3165}"
 TARGET="${TARGET:-rewair.local_bridge-AWAIR-FreeRTOS-LwIP-SDIO}"
 BUILD_NAME="${BUILD_NAME:-rewair_local_bridge-AWAIR-FreeRTOS-LwIP-SDIO}"
 WEBUI_DIR="$repo_root/webui"
+REWAIR_RELEASE_TAG="${REWAIR_RELEASE_TAG:-}"
+
+if [[ -n "$REWAIR_RELEASE_TAG" ]]; then
+  firmware_version="$(node "$repo_root/scripts/firmware_version.mjs" "$REWAIR_RELEASE_TAG")"
+  external_defines="${EXTERNAL_WICED_GLOBAL_DEFINES:-} REWAIR_RELEASE_BUILD=1"
+else
+  firmware_version="$(node "$repo_root/scripts/firmware_version.mjs")"
+  external_defines="${EXTERNAL_WICED_GLOBAL_DEFINES:-}"
+fi
+external_defines="${external_defines## }"
 
 if [[ -z "${HOST_OS:-}" ]]; then
   case "$(uname -s)-$(uname -m)" in
@@ -36,7 +46,13 @@ print -r -- "Building embedded web UI (npm run build in $WEBUI_DIR)..."
 REQUIRE_RWFS=1 "$repo_root/scripts/sync_to_wiced.zsh"
 
 cd "$SDK_DIR"
-"$WICED_MAKE" "$TARGET" "HOST_OS=$HOST_OS"
+print -r -- "Building firmware version: rewair $firmware_version"
+# WICED 3.3.1 does not treat command-line defines as a config.mk dependency.
+# Regenerate the app configuration so switching between local and tagged builds
+# cannot accidentally reuse the previous build's version mode.
+rm -f "$SDK_DIR/build/$BUILD_NAME/config.mk"
+"$WICED_MAKE" "$TARGET" "HOST_OS=$HOST_OS" \
+  "EXTERNAL_WICED_GLOBAL_DEFINES=$external_defines"
 
 # A normal WICED build does not materialize APPS.bin unless its legacy
 # download_apps target is requested.  Build just the lookup-table artifact;
@@ -46,7 +62,8 @@ cd "$SDK_DIR"
   "build/$BUILD_NAME/APPS.bin" \
   CLEANED_BUILD_STRING="$BUILD_NAME" \
   DIR_BUILD_STRING="$BUILD_NAME" \
-  "HOST_OS=$HOST_OS" SOURCE_ROOT=./ MAKEFILES_PATH=tools/makefiles
+  "HOST_OS=$HOST_OS" "EXTERNAL_WICED_GLOBAL_DEFINES=$external_defines" \
+  SOURCE_ROOT=./ MAKEFILES_PATH=tools/makefiles
 
 app_bin="$SDK_DIR/build/$BUILD_NAME/binary/$BUILD_NAME.bin"
 app_limit=$(( 0x74000 ))

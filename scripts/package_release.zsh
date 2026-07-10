@@ -4,9 +4,15 @@ set -euo pipefail
 repo_root="${0:A:h:h}"
 SDK_DIR="${SDK_DIR:-$repo_root/../third_party/wiced-emw3165}"
 OUTPUT_DIR="${OUTPUT_DIR:-$repo_root/build/release}"
-VERSION="${VERSION:-dev}"
+REWAIR_RELEASE_TAG="${REWAIR_RELEASE_TAG:-}"
 SOURCE_REVISION="${SOURCE_REVISION:-$(git -C "$repo_root" rev-parse HEAD)}"
 SDK_REVISION="${SDK_REVISION:-$(git -C "$SDK_DIR" rev-parse HEAD)}"
+
+if [[ -n "$REWAIR_RELEASE_TAG" ]]; then
+  FIRMWARE_VERSION="$(node "$repo_root/scripts/firmware_version.mjs" "$REWAIR_RELEASE_TAG")"
+else
+  FIRMWARE_VERSION="$(node "$repo_root/scripts/firmware_version.mjs")"
+fi
 
 if [[ -z "${HOST_OS:-}" ]]; then
   case "$(uname -s)-$(uname -m)" in
@@ -24,6 +30,7 @@ WICED_MAKE="${WICED_MAKE:-$SDK_DIR/tools/common/$HOST_OS/make}"
 "$WICED_MAKE" -C "$SDK_DIR" waf.sflash_write-NoOS-NoNS-AWAIR "HOST_OS=$HOST_OS"
 rm -rf "$OUTPUT_DIR"
 node "$repo_root/scripts/package_release.mjs" \
-  "$SDK_DIR" "$OUTPUT_DIR" "$VERSION" "$SOURCE_REVISION" "$SDK_REVISION"
+  "$SDK_DIR" "$OUTPUT_DIR" "$FIRMWARE_VERSION" "$REWAIR_RELEASE_TAG" \
+  "$SOURCE_REVISION" "$SDK_REVISION"
 
 print -r -- "Release bundle: $OUTPUT_DIR"

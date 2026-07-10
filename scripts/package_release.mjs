@@ -5,9 +5,16 @@ import { mkdir, copyFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
-const [sdkDir, outputDir, version = 'dev', sourceRevision = 'unknown', sdkRevision = 'unknown'] = process.argv.slice(2);
+const [
+  sdkDir,
+  outputDir,
+  version = 'dev',
+  releaseTag = '',
+  sourceRevision = 'unknown',
+  sdkRevision = 'unknown',
+] = process.argv.slice(2);
 if (!sdkDir || !outputDir) {
-  console.error('usage: package_release.mjs <sdk-dir> <output-dir> [version] [source-revision] [sdk-revision]');
+  console.error('usage: package_release.mjs <sdk-dir> <output-dir> [version] [release-tag] [source-revision] [sdk-revision]');
   process.exit(1);
 }
 
@@ -68,6 +75,10 @@ const application = await addAsset({
   description: 'Rewair application firmware with the web UI embedded.',
 });
 validateCortexMImage('application', application.data, 0x0800c000);
+const embeddedVersion = `rewair ${version}`;
+if (!application.data.includes(Buffer.from(`${embeddedVersion}\0`, 'ascii'))) {
+  throw new Error(`application does not contain expected firmware version ${embeddedVersion}`);
+}
 const loaderData = await readFile(sources.sflashLoader);
 const loaderEntryPoint = loaderData.readUInt32LE(0);
 const loaderStackAddress = loaderData.readUInt32LE(4);
@@ -117,9 +128,11 @@ await addAsset({
 });
 
 const manifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   product: 'rewair-emw3165',
   version,
+  firmwareVersion: embeddedVersion,
+  releaseTag: releaseTag || null,
   sourceRevision,
   sdk: {
     repository: 'https://github.com/kamejoko80/wiced-emw3165',
