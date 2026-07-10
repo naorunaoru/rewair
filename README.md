@@ -193,9 +193,11 @@ build a release without them, comment out that define in `web_api.h`.
 For BLE, open the same localhost page without a `device` query parameter and
 use **Connect over Bluetooth**. A normal no-Wi-Fi deployment must be hosted
 from a secure HTTPS origin; the Vite bundle uses relative asset URLs and can
-be published directly to GitHub Pages or another static host. The repository
-does not create that hosted deployment yet. BLE is currently read-only while
-an authenticated session design is added; see [docs/bi201.md](docs/bi201.md).
+be published directly to GitHub Pages or another static host. After the Pages
+workflow lands on `main` and GitHub Pages is configured to use GitHub Actions,
+this repository publishes it at <https://naorunaoru.github.io/rewair/>. BLE is
+currently read-only while an authenticated session design is added; see
+[docs/bi201.md](docs/bi201.md).
 
 Build the production bundle (this is what actually ships to the device):
 

@@ -46,7 +46,9 @@ Date: 2026-07-10.
 - Web UI (`webui/`, Preact + Vite) builds to a packed RWFS image and is
   served by the device itself from external SPI flash at `/`, `/app.js`,
   `/rewair.css`. The same bundle can run from an HTTPS static host and connect
-  through Web Bluetooth when the device has no Wi-Fi.
+  through Web Bluetooth when the device has no Wi-Fi. A GitHub Actions
+  workflow tests, builds, and publishes it to GitHub Pages after `webui/`
+  changes land on `main`.
 - `rewair_net_mode` (`wiced/apps/rewair/local_bridge/rewair_net_mode.c`):
   pure-STA-or-pure-AP setup mode. No stored network -> open setup AP
   `rewair-setup-<xxxx>` (last 4 MAC hex) at `192.168.0.1` with internal
@@ -141,9 +143,9 @@ behavior as a data point, not a verdict.
 
 - Define an authenticated BLE session and threat model, then enable onboarding
   mutations (`join`, `forget`, and priority) through the shared API core.
+  Use a short-lived four-digit code shown on the device to authorize settings
+  changes while keeping sensor readings available without authentication.
   Settings/display/time can follow; keep firmware OTA on Wi-Fi.
-- Add a GitHub Pages (or equivalent HTTPS static-host) deployment for
-  `webui/dist/`. The bundle itself is already host-independent.
 
 - Get an actual wire-level capture of the F411-F103 UART link (115200 8N1) to
   settle the open question from 2026-06-08 that was never followed up:
