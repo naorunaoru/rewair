@@ -15,6 +15,8 @@
 #include "wiced_management.h"
 #include "wiced_tcpip.h"
 #include "internal/wiced_internal_api.h"
+#include "wiced_apps_common.h"
+#include "wiced_dct_common.h"
 #include "sntp.h"
 #include "rewair_state.h"
 #include "rewair_tz.h"
@@ -139,6 +141,66 @@ static uint32_t sensor_raw_trace_reported = 0u;
 volatile uint32_t wifi_time_synced = 0u;
 volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
+
+/* The Wi-Fi firmware is read through WICED's multi-app table in external
+ * flash.  Existing units have the DCT slot pointing at the SDK default LUT
+ * address (zero), so migrate just that one DCT entry before WLAN starts.
+ * wiced_dct_set_app_header_location() uses the SDK's redundant-DCT update
+ * path and therefore preserves Wi-Fi credentials and every other section. */
+static wiced_result_t wifi_firmware_prepare_dct( void )
+{
+    image_location_t current;
+    image_location_t desired;
+    wiced_result_t result;
+    uint32_t desired_header = REWAIR_WIFI_FW_LUT_ADDR +
+                              (uint32_t)sizeof( app_header_t ) * DCT_WIFI_FIRMWARE_INDEX;
+
+    memset( &current, 0, sizeof( current ) );
+    result = wiced_dct_get_app_header_location( DCT_WIFI_FIRMWARE_INDEX, &current );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi-fw] DCT read failed: %d\n", (int)result );
+        return result;
+    }
+
+    if ( current.id == EXTERNAL_FIXED_LOCATION &&
+         current.detail.external_fixed.location == desired_header )
+    {
+        printf( "[wifi-fw] external header ready at 0x%lx\n",
+                (unsigned long)desired_header );
+        return WICED_SUCCESS;
+    }
+
+    memset( &desired, 0, sizeof( desired ) );
+    desired.id = EXTERNAL_FIXED_LOCATION;
+    desired.detail.external_fixed.location = desired_header;
+
+    printf( "[wifi-fw] moving DCT header from id=%d addr=0x%lx to 0x%lx\n",
+            (int)current.id,
+            (unsigned long)current.detail.external_fixed.location,
+            (unsigned long)desired_header );
+    result = wiced_dct_set_app_header_location( DCT_WIFI_FIRMWARE_INDEX, &desired );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi-fw] DCT update failed: %d\n", (int)result );
+        return result;
+    }
+
+    memset( &current, 0, sizeof( current ) );
+    result = wiced_dct_get_app_header_location( DCT_WIFI_FIRMWARE_INDEX, &current );
+    if ( result != WICED_SUCCESS || current.id != EXTERNAL_FIXED_LOCATION ||
+         current.detail.external_fixed.location != desired_header )
+    {
+        printf( "[wifi-fw] DCT verify failed: %d id=%d addr=0x%lx\n",
+                (int)result, (int)current.id,
+                (unsigned long)current.detail.external_fixed.location );
+        return WICED_ERROR;
+    }
+
+    printf( "[wifi-fw] DCT header moved and verified at 0x%lx\n",
+            (unsigned long)desired_header );
+    return WICED_SUCCESS;
+}
 
 /* current_tz_rule, current_tz_rule_valid, and sensor_set_tz_rule() now live
  * in rewair_frames.c (Phase 2 Task 8, primary writer: sensor_set_tz_rule);
@@ -1027,6 +1089,11 @@ void application_start( void )
     WPRINT_WICED_INFO( ( "\nStarting WICED v" WICED_VERSION "\n" ) );
     result = wiced_core_init( );
     if ( result != WICED_SUCCESS )
+    {
+        return;
+    }
+
+    if ( wifi_firmware_prepare_dct( ) != WICED_SUCCESS )
     {
         return;
     }

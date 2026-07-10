@@ -26,6 +26,14 @@ EXTRA_TARGET_MAKEFILES +=  $(MAKEFILES_PATH)/standard_platform_targets.mk
 
 VALID_BUSES := SDIO SPI
 
+# Keep the 43362 firmware in the EMW3165's external 2 MiB SPI flash instead
+# of spending roughly 205 KiB of the STM32F411's 512 KiB internal flash on
+# a byte-for-byte copy.  The app lookup table and firmware sector are
+# provisioned by scripts/flash_wifi_firmware_sflash.zsh.
+ifeq ($(NO_WIFI_FIRMWARE),)
+MULTI_APP_WIFI_FIRMWARE := resources/firmware/$(WLAN_CHIP)/$(WLAN_CHIP)$(WLAN_CHIP_REVISION)$(WLAN_CHIP_BIN_TYPE).bin
+endif
+
 ifeq ($(BUS),SDIO)
 ifeq ($(MULTI_APP_WIFI_FIRMWARE),)
 GLOBAL_DEFINES          += WWD_DIRECT_RESOURCES
@@ -36,8 +44,6 @@ WIFI_FIRMWARE_LOCATION 	:= WIFI_FIRMWARE_IN_MULTI_APP
 GLOBAL_DEFINES          += WIFI_FIRMWARE_IN_MULTI_APP
 endif
 endif
-
-GLOBAL_DEFINES          += WWD_DIRECT_RESOURCES
 # Global includes
 GLOBAL_INCLUDES  := .
 
@@ -73,9 +79,10 @@ endif
 # APP1 :=
 # APP2 :=
 
-# WICED APPS LOOKUP TABLE
-APPS_LUT_HEADER_LOC := 0x0000
-APPS_START_SECTOR := 1
+# WICED apps lookup table and BCM43362A2 image.  Sectors below 0x101 are
+# owned by the custom OTA stage/backup/journal; 0x1c0 and above hold RWFS.
+APPS_LUT_HEADER_LOC := 0x101000
+APPS_START_SECTOR := 258
 
 ifneq ($(APP),bootloader)
 ifneq ($(MAIN_COMPONENT_PROCESSING),1)

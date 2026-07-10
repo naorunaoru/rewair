@@ -17,6 +17,9 @@ extern "C" {
 #define REWAIR_OTA_BACKUP_SLOT_SIZE     0x080000u
 #define REWAIR_OTA_META_ADDR            0x100000u
 #define REWAIR_OTA_META_SIZE            0x001000u
+#define REWAIR_WIFI_FW_LUT_ADDR         0x101000u
+#define REWAIR_WIFI_FW_BLOB_ADDR        0x102000u
+#define REWAIR_WIFI_FW_SLOT_SIZE        0x034000u
 #define REWAIR_OTA_UI_ADDR              0x1c0000u
 
 #define REWAIR_OTA_SFLASH_SECTOR_SIZE   0x001000u
