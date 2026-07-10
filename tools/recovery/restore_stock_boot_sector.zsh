@@ -5,7 +5,7 @@ CHIP="${CHIP:-STM32F411CE}"
 SPEED="${SPEED:-950}"
 
 if [[ -z "${IMAGE:-}" ]]; then
-  print -u2 -r -- "Set IMAGE=/path/to/known-good-boot-sector.bin"
+  print -u2 -r -- "Set IMAGE=/path/to/your-stock-boot-sector-backup.bin"
   exit 2
 fi
 

@@ -5,7 +5,7 @@ CHIP="${CHIP:-STM32F411CE}"
 SPEED="${SPEED:-950}"
 
 if [[ -z "${IMAGE:-}" ]]; then
-  print -u2 -r -- "Set IMAGE=/path/to/known-good.bin"
+  print -u2 -r -- "Set IMAGE=/path/to/your-stock-f411-backup.bin"
   exit 2
 fi
 

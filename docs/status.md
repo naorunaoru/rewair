@@ -227,12 +227,12 @@ make -C tools/legacy/emw3165_sensor_console
 tools/legacy/emw3165_sensor_console/flash_sensor_console.zsh
 ```
 
-Restore stock F411 firmware if an experimental flash leaves the module
-unable to boot:
+Restore the stock F411 firmware from the device-specific dump captured before
+experimental flashing:
 
 ```sh
-IMAGE=/path/to/known-good.bin tools/recovery/restore_stock_f411.zsh
+IMAGE=../dumps/my-element-stock-f411.bin tools/recovery/restore_stock_f411.zsh
 ```
 
-See `tools/recovery/README.md` for the boot-sector-only variant and the
-expected location of golden dump images.
+See `tools/recovery/README.md` for the mandatory pre-flash backup step and the
+boot-sector-only restore variant. No stock image is distributed with Rewair.

@@ -65,13 +65,13 @@ or:
 tools/legacy/emw3165_sensor_console/flash_sensor_console.zsh
 ```
 
-To restore a full known-good image or just the boot sector, see
-`tools/recovery/` (the restore scripts moved there since they are the
-safety-critical path back to stock firmware, not specific to this console):
+Before flashing this console, create your own stock-firmware backup as
+described in `tools/recovery/README.md`. No stock image is bundled with Rewair.
+To restore your full backup or just its boot sector:
 
 ```sh
-IMAGE=/path/to/known-good.bin tools/recovery/restore_stock_f411.zsh
-IMAGE=/path/to/known-good-boot-sector.bin tools/recovery/restore_stock_boot_sector.zsh
+IMAGE=../dumps/my-element-stock-f411.bin tools/recovery/restore_stock_f411.zsh
+IMAGE=/path/to/my-boot-sector.bin tools/recovery/restore_stock_boot_sector.zsh
 ```
 
 ## Console Commands

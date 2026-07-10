@@ -41,7 +41,8 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
   checking the F103 protocol without the WICED stack.
 - `tools/f103_debug`: SWD/GDB helpers for inspecting the F103 when the UART link
   stops responding.
-- `tools/recovery`: restore path back to stock F411 firmware.
+- `tools/recovery`: pre-flash backup and restore path for the user's own stock
+  F411 firmware.
 - `docs/status.md`: current project state, known-good commands, and next steps.
 
 ## Module Summary
