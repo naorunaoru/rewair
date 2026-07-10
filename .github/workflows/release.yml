@@ -80,4 +80,5 @@ jobs:
           build/release/*
           --verify-tag
           --generate-notes
+          --notes-file build/release/FLASHING.txt
           --title "Rewair ${{ github.ref_name }}"
