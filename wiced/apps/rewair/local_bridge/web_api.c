@@ -6,6 +6,7 @@
 #include "http_server.h"
 #include "rewair_state.h"
 #include "rewair_json.h"
+#include "rewair_api.h"
 #include "rewair_settings.h"
 #include "rewair_tz.h"
 #include "rewair_frames.h"
@@ -19,6 +20,7 @@
 
 #define API_BODY_MAX      1024u
 #define API_STATUS_BUF    1024u
+#define API_LIST_BUF      2048u
 #define API_WORKER_STACK  6000u
 #define API_MAX_SAVED_NETWORKS CONFIG_AP_LIST_SIZE
 
@@ -177,32 +179,12 @@ static int api_read_body( wiced_http_message_body_t* http_data, char* out, uint3
     return (int)total;
 }
 
-/* ---- connected_s: association-start-uptime -> duration ----
- * rewair_state_snapshot() reports st.connected_s as the uptime (ms/1000) at
- * which the station associated. Every serializer that hands a snapshot to a
- * client must convert that into an elapsed-seconds duration before calling
- * rewair_json_status(), or the client sees a constant "moment of connection"
- * value instead of a growing duration. This helper is the single place that
- * conversion happens -- api_status_handler, the SSE broadcaster, and
- * api_events_handler's initial frame all call it so the logic can't drift
- * between call sites. */
-static void rewair_apply_connected_duration( rewair_status_t* st )
-{
-    wiced_time_t now_ms = 0;
-
-    wiced_time_get_time( &now_ms );
-    if ( st->wifi_mode == 0u && st->connected_s != 0u )
-    {
-        st->connected_s = (uint32_t)now_ms / 1000u - st->connected_s;
-    }
-}
-
 /* ---- GET /api/status ---- */
 static int32_t api_status_handler( const char* url, wiced_http_response_stream_t* stream,
                                    void* arg, wiced_http_message_body_t* http_data )
 {
     static char buf[API_STATUS_BUF];
-    rewair_status_t st;
+    uint16_t status = 500u;
     int len;
 
     (void)url; (void)arg;
@@ -212,10 +194,9 @@ static int32_t api_status_handler( const char* url, wiced_http_response_stream_t
         return 0;
     }
 
-    rewair_state_snapshot( &st );
-    rewair_apply_connected_duration( &st );
-    len = rewair_json_status( &st, buf, sizeof( buf ) );
-    if ( len < 0 )
+    len = rewair_api_execute( REWAIR_API_OP_STATUS, NULL, 0u,
+                              buf, sizeof( buf ), &status );
+    if ( len < 0 || status != 200u )
     {
         api_send_error( stream, HTTP_HEADER_500, "status too large" );
         return 0;
@@ -224,36 +205,39 @@ static int32_t api_status_handler( const char* url, wiced_http_response_stream_t
     return 0;
 }
 
-/* ---- security display string ---- */
-static const char* sec_name( wiced_security_t s )
+/* ---- GET /api/capabilities ---- */
+static int32_t api_capabilities_handler( const char* url,
+                                         wiced_http_response_stream_t* stream,
+                                         void* arg, wiced_http_message_body_t* http_data )
 {
-    if ( s == WICED_SECURITY_OPEN )
+    char buf[160];
+    uint16_t status = 500u;
+    int len;
+
+    (void)url; (void)arg;
+    if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
     {
-        return "open";
+        api_send_error( stream, HTTP_HEADER_405, "GET only" );
+        return 0;
     }
-    if ( ( s & WEP_ENABLED ) != 0 )
+    len = rewair_api_execute( REWAIR_API_OP_CAPABILITIES, NULL, 0u,
+                              buf, sizeof( buf ), &status );
+    if ( len < 0 || status != 200u )
     {
-        return "WEP";
+        api_send_error( stream, HTTP_HEADER_500, "capabilities unavailable" );
+        return 0;
     }
-    if ( ( s & WPA2_SECURITY ) != 0 )
-    {
-        return "WPA2";
-    }
-    if ( ( s & WPA_SECURITY ) != 0 )
-    {
-        return "WPA";
-    }
-    return "WPA2";
+    api_send( stream, HTTP_HEADER_200, "application/json", buf, (uint32_t)len );
+    return 0;
 }
 
 /* ---- GET /api/scan ---- */
 static int32_t api_scan_handler( const char* url, wiced_http_response_stream_t* stream,
                                  void* arg, wiced_http_message_body_t* http_data )
 {
-    static char buf[192];
-    uint32_t count;
-    uint32_t i;
-    int n;
+    static char buf[API_LIST_BUF];
+    uint16_t status = 500u;
+    int len;
 
     (void)url; (void)arg;
     if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
@@ -262,51 +246,14 @@ static int32_t api_scan_handler( const char* url, wiced_http_response_stream_t* 
         return 0;
     }
 
-    count = sensor_scan_blocking( );
-
-    /* stream the array without a big buffer: raw header first (no Content-Length,
-       so use Connection: close for this route) */
+    len = rewair_api_execute( REWAIR_API_OP_SCAN, NULL, 0u,
+                              buf, sizeof( buf ), &status );
+    if ( len < 0 || status != 200u )
     {
-        const char* hdr = HTTP_HEADER_200 "\r\n"
-                          "Content-Type: application/json\r\n"
-                          API_CORS_HEADER
-                          "Cache-Control: no-store\r\n"
-                          "Connection: close\r\n"
-                          "\r\n";
-        wiced_http_response_stream_write( stream, hdr, (uint32_t)strlen( hdr ) );
+        api_send_error( stream, HTTP_HEADER_500, "scan unavailable" );
+        return 0;
     }
-    wiced_http_response_stream_write( stream, "[", 1u );
-    for ( i = 0u; i < count; i++ )
-    {
-        const wiced_scan_result_t* r = console_scan_cache_get( i );
-        char ssid[33];
-        char ssid_esc[66];
-        uint32_t sl;
-
-        if ( r == NULL )
-        {
-            break;
-        }
-        sl = r->SSID.length <= 32u ? r->SSID.length : 32u;
-        memcpy( ssid, r->SSID.value, sl );
-        ssid[sl] = '\0';
-        (void)rewair_json_escape_string( ssid, ssid_esc, sizeof( ssid_esc ) );
-        n = snprintf( buf, sizeof( buf ), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"sec\":\"%s\"}",
-                      i == 0u ? "" : ",", ssid_esc, (int)r->signal_strength, sec_name( r->security ) );
-        if ( n > 0 )
-        {
-            wiced_http_response_stream_write( stream, buf, (uint32_t)n );
-        }
-    }
-    wiced_http_response_stream_write( stream, "]", 1u );
-
-    /* The "Connection: close" header above is advisory only -- the WICED HTTP
-     * server only auto-closes when the *request* carried that header. Since
-     * this route has no Content-Length (streamed body), we must explicitly
-     * queue the disconnect so the client sees EOF instead of hanging in
-     * keep-alive until its own timeout. */
-    wiced_http_response_stream_flush( stream );
-    wiced_http_server_queue_disconnect_request( &http_server, stream->tcp_stream.socket );
+    api_send( stream, HTTP_HEADER_200, "application/json", buf, (uint32_t)len );
     return 0;
 }
 
@@ -314,9 +261,9 @@ static int32_t api_scan_handler( const char* url, wiced_http_response_stream_t* 
 static int32_t api_networks_handler( const char* url, wiced_http_response_stream_t* stream,
                                      void* arg, wiced_http_message_body_t* http_data )
 {
-    static char buf[224];
-    uint32_t index;
-    int n;
+    static char buf[API_LIST_BUF];
+    uint16_t status = 500u;
+    int len;
 
     (void)url; (void)arg;
     if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
@@ -325,71 +272,14 @@ static int32_t api_networks_handler( const char* url, wiced_http_response_stream
         return 0;
     }
 
-    /* Streamed, no Content-Length -- same explicit-disconnect pattern as
-     * /api/scan (the daemon does not honor a response Connection: close). */
+    len = rewair_api_execute( REWAIR_API_OP_NETWORKS, NULL, 0u,
+                              buf, sizeof( buf ), &status );
+    if ( len < 0 || status != 200u )
     {
-        const char* hdr = HTTP_HEADER_200 "\r\n"
-                          "Content-Type: application/json\r\n"
-                          API_CORS_HEADER
-                          "Cache-Control: no-store\r\n"
-                          "Connection: close\r\n"
-                          "\r\n";
-        wiced_http_response_stream_write( stream, hdr, (uint32_t)strlen( hdr ) );
+        api_send_error( stream, HTTP_HEADER_500, "networks unavailable" );
+        return 0;
     }
-    wiced_http_response_stream_write( stream, "[", 1u );
-
-    for ( index = 0u; ; index++ )
-    {
-        char ssid[33];
-        char ssid_esc[66];
-        wiced_security_t sec = WICED_SECURITY_OPEN;
-        int connected = 0;
-        int in_range = 0;
-        int32_t rssi = 0;
-        uint32_t i;
-
-        if ( wifi_list_get( index, ssid, &sec, &connected ) == 0 )
-        {
-            break;
-        }
-
-        for ( i = 0u; ; i++ )
-        {
-            const wiced_scan_result_t* r = console_scan_cache_get( i );
-            char scan_ssid[33];
-            uint32_t sl;
-
-            if ( r == NULL )
-            {
-                break;
-            }
-            sl = r->SSID.length <= 32u ? r->SSID.length : 32u;
-            memcpy( scan_ssid, r->SSID.value, sl );
-            scan_ssid[sl] = '\0';
-            if ( strcmp( scan_ssid, ssid ) == 0 )
-            {
-                in_range = 1;
-                rssi = r->signal_strength;
-                break;
-            }
-        }
-
-        (void)rewair_json_escape_string( ssid, ssid_esc, sizeof( ssid_esc ) );
-        n = snprintf( buf, sizeof( buf ),
-                      "%s{\"ssid\":\"%s\",\"sec\":\"%s\",\"saved\":true,\"in_range\":%s,"
-                      "\"rssi\":%d,\"connected\":%s}",
-                      index == 0u ? "" : ",", ssid_esc, sec_name( sec ),
-                      in_range != 0 ? "true" : "false", (int)rssi,
-                      connected != 0 ? "true" : "false" );
-        if ( n > 0 )
-        {
-            wiced_http_response_stream_write( stream, buf, (uint32_t)n );
-        }
-    }
-
-    wiced_http_response_stream_write( stream, "]", 1u );
-    wiced_http_response_stream_flush( stream );
-    wiced_http_server_queue_disconnect_request( &http_server, stream->tcp_stream.socket );
+    api_send( stream, HTTP_HEADER_200, "application/json", buf, (uint32_t)len );
     return 0;
 }
 
@@ -1445,7 +1335,7 @@ static int32_t api_events_handler( const char* url, wiced_http_response_stream_t
 {
     static char json[API_STATUS_BUF];
     static char frame[API_STATUS_BUF + 32u];
-    rewair_status_t st;
+    uint16_t status = 500u;
     int len;
     int n;
 
@@ -1456,10 +1346,9 @@ static int32_t api_events_handler( const char* url, wiced_http_response_stream_t
         return 0;
     }
 
-    rewair_state_snapshot( &st );
-    rewair_apply_connected_duration( &st );
-    len = rewair_json_status( &st, json, sizeof( json ) );
-    if ( len < 0 )
+    len = rewair_api_execute( REWAIR_API_OP_STATUS, NULL, 0u,
+                              json, sizeof( json ), &status );
+    if ( len < 0 || status != 200u )
     {
         api_send_error( stream, HTTP_HEADER_500, "status unavailable" );
         return 0;
@@ -1480,6 +1369,8 @@ static int32_t api_events_handler( const char* url, wiced_http_response_stream_t
 
 /* ---- page database + start ---- */
 static START_OF_HTTP_PAGE_DATABASE( api_pages )
+    { "/api/capabilities", "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
+      .url_content.dynamic_data = { api_capabilities_handler, NULL } },
     { "/api/status",    "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,
       .url_content.dynamic_data = { api_status_handler, NULL } },
     { "/api/scan",      "application/json", WICED_RAW_DYNAMIC_URL_CONTENT,

@@ -50,6 +50,15 @@ body {
 .topbar h1 { font-size: 20px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
 .topbar .brand { font-size: 12px; color: var(--faint); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
 .topbar .spacer { flex: 1; }
+.transport-chip {
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px;
+  color: var(--muted); font-size: 11px; font-weight: 600;
+}
+.transport-button {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font: inherit; font-size: 12px; padding: 3px 6px;
+}
+.transport-button:hover { color: var(--ink); }
 .wifi-chip {
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 12.5px; color: var(--muted);
@@ -62,6 +71,21 @@ body {
   font-size: 10.5px; font-weight: 750; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
   cursor: default;
+}
+
+.connect-gate {
+  min-height: 100vh; max-width: 420px; margin: 0 auto; padding: 15vh 24px 48px;
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: center;
+}
+.connect-mark { color: var(--faint); font-size: 12px; font-weight: 650; letter-spacing: 0.1em; text-transform: uppercase; }
+.connect-gate h1 { margin: 10px 0 8px; font-size: 28px; letter-spacing: -0.025em; }
+.connect-gate p { margin: 0 0 22px; color: var(--muted); }
+.connect-ble { min-width: 190px; }
+.connect-error, .transport-error { color: var(--purple); font-size: 12px; margin-top: 12px; }
+.transport-error { margin: -8px 2px 14px; }
+.transport-note {
+  margin: 26px 0 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px;
+  color: var(--muted); font-size: 12.5px;
 }
 
 /* tiny CSS tooltip */

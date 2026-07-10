@@ -29,7 +29,7 @@
 #include "rewair_wifi_dct.h"
 #include "rewair_wifi_scan.h"
 #include "rewair_wifi_join.h"
-#include "rewair_console.h"
+#include "rewair_ble.h"
 #include "rewair_ota.h"
 #include "rewair_ota_layout.h"
 #include "rewair_sflash.h"
@@ -41,7 +41,6 @@
 
 #define SENSOR_RX_BUFFER_SIZE 1024u
 #define SENSOR_THREAD_STACK_SIZE 4096u
-#define CONSOLE_THREAD_STACK_SIZE 4096u
 #define NETWORK_THREAD_STACK_SIZE 6144u
 /* CONSOLE_LINE_MAX, CONSOLE_ARG_MAX moved to rewair_console.c (Phase 2
  * Task 11, pure move) -- only the console tokenizer/dispatcher used them. */
@@ -57,7 +56,6 @@
 
 static sensor_rx_t sensor_rx;
 static wiced_thread_t sensor_thread;
-static wiced_thread_t console_thread;
 static wiced_thread_t network_thread;
 /* sensor_uart_tx_mutex now lives in rewair_frames.c (Phase 2 Task 8, primary
  * writer: sensor_uart_send_frame_bytes); declared extern in rewair_frames.h,
@@ -1128,7 +1126,7 @@ void application_start( void )
     setvbuf( stderr, NULL, _IONBF, 0 );
 
     printf( "\nRewair WICED local bridge\n" );
-    printf( "console: USART1 PB6 TX / PA10 RX, 115200 8N1\n" );
+    printf( "ble:     USART1 PB6 TX / PA10 RX, 115200 8N1\n" );
     printf( "sensor:  USART2 PA2 TX / PA3 RX, 115200 8N1\n" );
 
     if ( sensor_uart_start( ) != WICED_SUCCESS )
@@ -1143,6 +1141,11 @@ void application_start( void )
         return;
     }
 
+    if ( rewair_ble_start( ) != WICED_SUCCESS )
+    {
+        printf( "BI201 start failed\n" );
+    }
+
     result = wiced_wlan_connectivity_init( );
     if ( result != WICED_SUCCESS )
     {
@@ -1150,13 +1153,6 @@ void application_start( void )
     }
 
     rewair_mqtt_start( );
-
-    if ( wiced_rtos_create_thread( &console_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "console",
-                                   console_thread_main, CONSOLE_THREAD_STACK_SIZE, NULL ) != WICED_SUCCESS )
-    {
-        printf( "console thread start failed\n" );
-    }
-
     if ( wiced_rtos_create_thread( &network_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "network",
                                    network_thread_main, NETWORK_THREAD_STACK_SIZE, NULL ) != WICED_SUCCESS )
     {

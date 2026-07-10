@@ -6,6 +6,9 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_tz.c \
                    rewair_settings.c \
                    rewair_json.c \
+                   rewair_api.c \
+                   rewair_ble_proto.c \
+                   rewair_ble.c \
                    rewair_uifs.c \
                    rewair_fmt.c \
                    rewair_walltime.c \
@@ -19,18 +22,22 @@ $(NAME)_SOURCES := local_bridge.c \
                    rewair_mqtt.c \
                    rewair_mqtt_packet.c \
                    rewair_ota.c \
-                   rewair_console.c \
                    jsmn.c \
                    web_api.c \
                    web_ui.c \
                    ../../../libraries/protocols/SNTP/sntp.c
+
+# USART1 is dedicated to the BI201. Keep newlib's syscall shim so existing
+# printf diagnostics link, but WICED_DISABLE_STDIO makes their platform sink a
+# no-op and permits the generic UART API to own WICED_UART_1.
+$(NAME)_SOURCES += ../../../WICED/platform/GCC/stdio_newlib.c
 
 $(NAME)_INCLUDES := ../../../libraries/protocols/SNTP
 
 $(NAME)_COMPONENTS += daemons/HTTP_server
 $(NAME)_COMPONENTS += daemons/DNS_redirect
 
-GLOBAL_DEFINES += JSMN_PARENT_LINKS
+GLOBAL_DEFINES += JSMN_PARENT_LINKS WICED_DISABLE_STDIO
 
 WIFI_CONFIG_DCT_H := wifi_config_dct.h
 

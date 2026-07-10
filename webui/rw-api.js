@@ -1,14 +1,16 @@
 import { firmwareCRC32, FW_CHUNK_SIZE, FW_MAX_SIZE } from './rw-ota.js';
+import { RewairBleTransport } from './rw-ble-transport.js';
 
-/* Rewair production API adapter: RewairAPI over fetch/EventSource.
- * Point at a remote device with ?device=192.168.x.x (dev), else same-origin.
+/* Rewair production API facade over HTTP or Web Bluetooth.
+ * Point HTTP at a remote device with ?device=192.168.x.x (dev), else
+ * same-origin. connectBluetooth() switches the active transport explicitly.
  * Exported as an ES module AND still assigned to window.RewairAPI (kept for
  * the dev console / parity with the pre-Vite build). Module scope means the
  * top-level consts/functions below no longer leak to globals on their own. */
 const qs = new URLSearchParams(location.search);
 const BASE = qs.get('device') ? `http://${qs.get('device')}` : '';
 
-async function req(path, opts) {
+async function httpReq(path, opts) {
   const r = await fetch(BASE + path, opts);
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
@@ -20,6 +22,14 @@ async function req(path, opts) {
   if (r.status === 204) return null;           // No Content — nothing to parse
   const ct = r.headers.get('content-type') || '';
   return ct.includes('json') ? r.json() : null;
+}
+
+const httpTransport = { kind: 'http', request: httpReq };
+let activeTransport = httpTransport;
+let bleTransport = null;
+
+function req(path, opts) {
+  return activeTransport.request(path, opts);
 }
 
 /* POST JSON as text/plain: keeps the request CORS-"simple" (the device
@@ -123,6 +133,7 @@ function otaPost(path, body, onUpload) {
 }
 
 async function updateFirmware(file, onProgress) {
+  if (activeTransport.kind !== 'http') throw new Error('Firmware update currently requires Wi-Fi');
   if (!file || file.size < 8) throw new Error('Choose a valid firmware .bin file');
   if (file.size > FW_MAX_SIZE) throw new Error('Firmware image exceeds the 464 KB app region');
 
@@ -145,6 +156,7 @@ async function updateFirmware(file, onProgress) {
 }
 
 const RewairAPI = {
+  capabilities: () => req('/api/capabilities'),
   status: () => req('/api/status'),
   scan: () => req('/api/scan'),
   networks: () => req('/api/networks'),
@@ -172,11 +184,27 @@ const RewairAPI = {
   update: updateFirmware,
   reset: () => post('/api/reset', {}),
 
+  bluetoothAvailable: () => typeof navigator !== 'undefined' && !!navigator.bluetooth,
+  transportKind: () => activeTransport.kind,
+  async connectBluetooth() {
+    if (es) { es.close(); es = null; }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (!bleTransport) bleTransport = new RewairBleTransport();
+    const capabilities = await bleTransport.connect();
+    activeTransport = bleTransport;
+    return capabilities;
+  },
+  useHttp() {
+    if (bleTransport) bleTransport.disconnect();
+    activeTransport = httpTransport;
+  },
+
   /* Live updates: SSE with transparent polling fallback. */
   subscribe(onStatus) {
     const startPolling = () => {
       if (pollTimer) return;
-      pollTimer = setInterval(() => this.status().then(onStatus).catch(() => {}), 2500);
+      const interval = activeTransport.kind === 'ble' ? 5000 : 2500;
+      pollTimer = setInterval(() => this.status().then(onStatus).catch(() => {}), interval);
     };
     const stopPolling = () => { clearInterval(pollTimer); pollTimer = null; };
 
@@ -184,6 +212,12 @@ const RewairAPI = {
      * and leak the prior EventSource (it keeps its connection open and
      * retrying forever). Auto-unsubscribe any live session first. */
     if (es) { es.close(); es = null; stopPolling(); }
+
+    if (activeTransport.kind === 'ble') {
+      startPolling();
+      this.status().then(onStatus).catch(() => {});
+      return () => stopPolling();
+    }
 
     es = new EventSource(BASE + '/api/events');
     es.onmessage = (ev) => {

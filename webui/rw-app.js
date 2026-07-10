@@ -29,7 +29,7 @@ import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
     setSettingsUI: (ui) => setSettingsUIExternal && setSettingsUIExternal(ui)
   };
 
-  function TopBar({ status }) {
+  function TopBar({ status, transport, onBluetooth }) {
     const w = status.wifi;
     const sta = w.mode === 'sta';
     const dotCol = sta ? RW.accent(RW.rssiQual(w.rssi)) : RW.accent('amber');
@@ -39,6 +39,10 @@ import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
         <h1>${status.name}</h1>
         <span class="brand">Rewair</span>
         <span class="spacer"></span>
+        ${transport === 'ble'
+          ? html`<span class="transport-chip">Bluetooth</span>`
+          : RewairAPI.bluetoothAvailable() && html`
+            <button class="transport-button" onClick=${onBluetooth}>Bluetooth</button>`}
         <span class="wifi-chip">
           <span class=${'dot' + (sta ? '' : ' ap')} style=${'background:' + dotCol}></span>
           <span>${sta ? w.ssid : 'AP mode'}</span>
@@ -55,6 +59,9 @@ import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
     const [settingsUI, setSettingsUI] = useState({ model: 'direct' });
     const [bump, setBump] = useState(0);
     const [cycle, setCycle] = useState(0);
+    const [transport, setTransport] = useState(RewairAPI.transportKind());
+    const [connectingBle, setConnectingBle] = useState(false);
+    const [connectError, setConnectError] = useState(null);
     const [, setTick] = useState(0);
     const history = useRef({});
 
@@ -92,11 +99,35 @@ import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
       const sec = setInterval(() => setTick((n) => n + 1), 1000);     // live clock
       const cyc = setInterval(() => setCycle((c) => c + 1), 2000);  // matrix sensor cycle
       return () => { unsubscribe(); clearInterval(sec); clearInterval(cyc); };
-    }, []);
+    }, [transport]);
+
+    const connectBluetooth = async () => {
+      setConnectingBle(true);
+      setConnectError(null);
+      try {
+        await RewairAPI.connectBluetooth();
+        setTransport('ble');
+        onStatus(await RewairAPI.status());
+      } catch (error) {
+        setConnectError(error.message || String(error));
+      } finally {
+        setConnectingBle(false);
+      }
+    };
 
     /* auto timezone is set explicitly by the user (Settings → Time zone) */
 
-    if (!status) return null;
+    if (!status) return html`
+      <main class="connect-gate">
+        <div class="connect-mark">Rewair</div>
+        <h1>Connect to your monitor</h1>
+        <p>The local HTTP device was not found. Connect directly over Bluetooth instead.</p>
+        <button class="btn primary connect-ble" disabled=${connectingBle || !RewairAPI.bluetoothAvailable()}
+          onClick=${connectBluetooth}>${connectingBle ? 'Connecting…' : 'Connect over Bluetooth'}</button>
+        ${!RewairAPI.bluetoothAvailable() && html`
+          <div class="connect-error">Web Bluetooth is not available in this browser.</div>`}
+        ${connectError && html`<div class="connect-error">${connectError}</div>`}
+      </main>`;
 
     const patch = (p) => RewairAPI.setSettings(p).then(poll);
     const setDisp = (m) => RewairAPI.setDisp(m).then(poll);
@@ -104,14 +135,18 @@ import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
 
     return html`<div id="rw-root">
       <div class="wrap">
-        <${TopBar} status=${status} />
+        <${TopBar} status=${status} transport=${transport} onBluetooth=${connectBluetooth} />
+        ${connectError && html`<div class="transport-error">${connectError}</div>`}
         <${RW.ScoreHero} status=${status} />
         <${RW.Sensors} status=${status} history=${history.current} />
-        <${RW.DisplaySelector} status=${status} cycle=${cycle} onPick=${setDisp} />
-        <${RW.NetworkSection} status=${status}
-          onManage=${() => setModal('manager')} onDetails=${() => setModal('details')} />
-        <${RW.Settings} status=${status} onPatch=${patch} onSetTime=${setTime} refresh=${poll} ui=${settingsUI} />
-        <footer class="foot"><span>${status.fw}</span> · local bridge</footer>
+        ${transport === 'ble' ? html`
+          <div class="transport-note">Bluetooth status is live. Settings and network onboarding stay locked
+            until authenticated BLE sessions are implemented.</div>` : html`
+          <${RW.DisplaySelector} status=${status} cycle=${cycle} onPick=${setDisp} />
+          <${RW.NetworkSection} status=${status}
+            onManage=${() => setModal('manager')} onDetails=${() => setModal('details')} />
+          <${RW.Settings} status=${status} onPatch=${patch} onSetTime=${setTime} refresh=${poll} ui=${settingsUI} />`}
+        <footer class="foot"><span>${status.fw}</span> · ${transport === 'ble' ? 'Bluetooth' : 'local bridge'}</footer>
       </div>
       ${modal === 'manager' && html`<${RW.Manager} bump=${bump} refresh=${poll}
         onClose=${() => setModal(null)} onAdd=${() => setModal('connect')} onDetails=${() => setModal('details')} />`}

@@ -12,22 +12,21 @@
   "row", signal bars, and status string are shared by both the
   Network section and the saved-networks manager (no drift).
 
-  Runtime: Preact (~3 KB gz) + htm (~0.5 KB), no build step —
-  htm tagged templates run in the browser. For the EMW3165 you
-  vendor preact + htm into flash and inline the rw-*.js files;
-  no CDN, no network dependency.
+  Runtime: Preact + htm, bundled by Vite with no CDN dependency.
+  The same static output is packed into the EMW3165 RWFS image or
+  can be published on an HTTPS static host for Web Bluetooth.
 
   Files
   - rewair.css         tokens + components (shared with vanilla)
-  - rw-api.js          production window.RewairAPI: fetch/EventSource
-                       adapter over the device HTTP API
+  - rw-api.js          transport-neutral window.RewairAPI facade
+  - rw-ble-*.js        Web Bluetooth transport + binary framing
   - rw-lib.js          helpers + Signal/NetworkRow/Matrix primitives
   - rw-widgets.js      ScoreHero, Sensors, DisplaySelector
   - rw-network.js      NetworkSection, Manager, Details/Connect modals
   - rw-settings.js     name/units/time/timezone
   - rw-app.js          App root: polling, theme, modal routing
 
-  HTTP API (implemented in local_bridge.c)
+  Shared API (HTTP plus the read-only BLE subset)
   - GET  /api/status   -> { name, fw, score{value,color,indices},
                             sens{temp,humid,co2,voc,dust,light},
                             wifi(sta|ap){…,saved_count}, time{valid,epoch,synced},

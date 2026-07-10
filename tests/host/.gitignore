@@ -7,3 +7,4 @@ test_walltime
 test_score
 test_ota
 test_mqtt_packet
+test_ble_proto

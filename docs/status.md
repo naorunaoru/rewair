@@ -1,12 +1,14 @@
 # Rewair Status
 
-Date: 2026-07-09.
+Date: 2026-07-10.
 
 ## Hardware
 
 - Radio module: EMW3165, STM32F411CE-class MCU plus Broadcom Wi-Fi over SDIO.
 - Sensor/display MCU: STM32F103VET6.
-- F411 debug console: USART1, `PB6` TX / `PA10` RX, 115200 8N1.
+- F411 to BI201: USART1, `PB6` TX / `PA10` RX, 115200 8N1. The old debug
+  console is disabled; diagnostics use SWD-readable state such as
+  `rewair_ble_diag`.
 - F411 to F103 link: USART2, `PA2` TX / `PA3` RX, 115200 8N1.
 - F103 reset from F411 appears to be on F411 `PB12`.
 - External SPI flash: Macronix MX25L1606E, 2 MiB, JEDEC ID `c2 20 15`. SPI1,
@@ -19,8 +21,8 @@ Date: 2026-07-09.
 
 - Baseline EMW3165 hardware characterization is complete.
 - WICED 3.3.1 SDK fork builds for custom `AWAIR` platform.
-- Rewair/local bridge boots WICED, initializes WLAN, and exposes a serial
-  console.
+- Rewair/local bridge boots WICED, initializes the BI201, and initializes
+  WLAN. USART1 stdio is disabled so the BLE module owns the port exclusively.
 - Wi-Fi scanning works; DCT-backed multi-network saved-AP list (join, forget,
   reorder priority) works, not just a single stored AP.
 - Autojoin from DCT works on boot.
@@ -35,9 +37,16 @@ Date: 2026-07-09.
   networks, join/forget/priority, settings, time, disp, reset, SSE stream at
   `/api/events`. See the README's [Web API
   Summary](../README.md#web-api-summary) for the route table.
+- Production BI201 transport (`rewair_ble.c` / `rewair_ble_proto.c`): COBS
+  framing, CRC32, fragmentation, ACK-paced responses, and HTTP-compatible
+  result statuses over the module's transparent GATT UART bridge. The shared
+  `rewair_api.c` core exposes capabilities, status, scan, and saved networks
+  over both HTTP and BLE. Mutations are deliberately locked until an
+  authenticated session is implemented.
 - Web UI (`webui/`, Preact + Vite) builds to a packed RWFS image and is
   served by the device itself from external SPI flash at `/`, `/app.js`,
-  `/rewair.css` — no separate web server needed once flashed.
+  `/rewair.css`. The same bundle can run from an HTTPS static host and connect
+  through Web Bluetooth when the device has no Wi-Fi.
 - `rewair_net_mode` (`wiced/apps/rewair/local_bridge/rewair_net_mode.c`):
   pure-STA-or-pure-AP setup mode. No stored network -> open setup AP
   `rewair-setup-<xxxx>` (last 4 MAC hex) at `192.168.0.1` with internal
@@ -66,9 +75,9 @@ Date: 2026-07-09.
   produced `offline`; the web API remained responsive through repeated failed
   reconnects, then the device restored `online`, state, and all discovery
   records after the broker restarted.
-- 9 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
+- 10 host-buildable test suites under `tests/host/` (`test_drops`, `test_tz`,
   `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
-  `test_ota`, `test_mqtt_packet`), all
+  `test_ota`, `test_mqtt_packet`, `test_ble_proto`), all
   passing against a clean `make -C tests/host`.
 - `scripts/api_smoke.zsh`: 21-check smoke test against a live device,
   covering both the web API and the sflash-served UI.
@@ -130,6 +139,12 @@ behavior as a data point, not a verdict.
 
 ## Next Steps
 
+- Define an authenticated BLE session and threat model, then enable onboarding
+  mutations (`join`, `forget`, and priority) through the shared API core.
+  Settings/display/time can follow; keep firmware OTA on Wi-Fi.
+- Add a GitHub Pages (or equivalent HTTPS static-host) deployment for
+  `webui/dist/`. The bundle itself is already host-independent.
+
 - Get an actual wire-level capture of the F411-F103 UART link (115200 8N1) to
   settle the open question from 2026-06-08 that was never followed up:
   - F411 `PA2` / USART2 TX -> F103 RX.
@@ -184,6 +199,12 @@ Smoke-test a live device:
 
 ```sh
 REWAIR_IP=192.168.1.242 scripts/api_smoke.zsh
+```
+
+Exercise the read-only BLE API from macOS:
+
+```sh
+uv run --with bleak==3.0.1 python tools/bi201/ble_api_probe.py --read-all --quiet-frames
 ```
 
 F103 debug snapshot:
