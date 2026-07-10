@@ -32,6 +32,20 @@ static void apply_connected_duration( rewair_status_t* status )
     }
 }
 
+/* The state stores the epoch captured at the last NTP/manual update. Project
+ * the live WICED clock into every shared status response so HTTP, SSE, and BLE
+ * all report current time from the same serialization path. */
+static void apply_current_epoch( rewair_status_t* status )
+{
+    wiced_utc_time_t now = 0u;
+
+    if ( status->time_valid != 0u &&
+         wiced_time_get_utc_time( &now ) == WICED_SUCCESS && now != 0u )
+    {
+        status->epoch = (uint32_t)now;
+    }
+}
+
 static int appendf( char* response, uint32_t response_size, uint32_t* position,
                     const char* format, ... )
 {
@@ -211,6 +225,7 @@ int rewair_api_execute( uint8_t operation, const uint8_t* body, uint32_t body_le
 
         rewair_state_snapshot( &status );
         apply_connected_duration( &status );
+        apply_current_epoch( &status );
         length = rewair_json_status( &status, response, response_size );
         if ( length < 0 )
         {

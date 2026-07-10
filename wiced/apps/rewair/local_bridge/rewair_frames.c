@@ -247,12 +247,25 @@ void send_disp_clock_canary( void )
 
 wiced_result_t sensor_send_disp_mode( const char* mode )
 {
-    char* fields[] = { "mode", (char*)mode };
+    const char* protocol_mode = mode;
+    rewair_status_t status;
+    char* fields[] = { "mode", NULL };
 
     if ( !cstr_eq( mode, "score" ) && !cstr_eq( mode, "clock" ) && !cstr_eq( mode, "sensors" ) )
     {
         return WICED_BADARG;
     }
+
+    /* "sensors" is the portal's aggregate mode, not an F103 DISP value.
+     * The stock display firmware exposes a temperature/humidity toggle with
+     * unit-specific names, so translate the public setting at the UART
+     * boundary rather than sending a mode the display silently ignores. */
+    if ( cstr_eq( mode, "sensors" ) )
+    {
+        rewair_state_snapshot( &status );
+        protocol_mode = status.units != 0u ? "temp_humid_f" : "temp_humid_c";
+    }
+    fields[1] = (char*)protocol_mode;
     sensor_send_frame( "DISP", fields, 2u );
     return WICED_SUCCESS;
 }
