@@ -199,6 +199,10 @@ this repository publishes it at <https://naorunaoru.github.io/rewair/>. BLE is
 currently read-only while an authenticated session design is added; see
 [docs/bi201.md](docs/bi201.md).
 
+The hosted HTTPS build starts without an HTTP transport and does not try to
+discover a LAN device. HTTP is selected only when the UI is served by the
+device itself over HTTP or when development explicitly supplies `?device=`.
+
 Build the production bundle (this is what actually ships to the device):
 
 ```sh

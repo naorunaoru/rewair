@@ -121,7 +121,9 @@ import './rw-settings.js'; // also pulls in rw-system.js (Firmware/Reset modals)
       <main class="connect-gate">
         <div class="connect-mark">Rewair</div>
         <h1>Connect to your monitor</h1>
-        <p>The local HTTP device was not found. Connect directly over Bluetooth instead.</p>
+        <p>${RewairAPI.httpAvailable()
+          ? 'Trying the configured local HTTP device. You can connect over Bluetooth instead.'
+          : 'Connect over Bluetooth to view live readings and device status.'}</p>
         <button class="btn primary connect-ble" disabled=${connectingBle || !RewairAPI.bluetoothAvailable()}
           onClick=${connectBluetooth}>${connectingBle ? 'Connecting…' : 'Connect over Bluetooth'}</button>
         ${!RewairAPI.bluetoothAvailable() && html`

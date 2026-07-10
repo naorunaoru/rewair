@@ -1,14 +1,16 @@
 import { firmwareCRC32, FW_CHUNK_SIZE, FW_MAX_SIZE } from './rw-ota.js';
 import { RewairBleTransport } from './rw-ble-transport.js';
+import { initialHttpTarget } from './rw-transport-mode.js';
 
 /* Rewair production API facade over HTTP or Web Bluetooth.
- * Point HTTP at a remote device with ?device=192.168.x.x (dev), else
- * same-origin. connectBluetooth() switches the active transport explicitly.
+ * Point HTTP at a remote device with ?device=192.168.x.x (dev), or use
+ * same-origin when the device serves the UI. Hosted builds start unconnected.
+ * connectBluetooth() switches the active transport explicitly.
  * Exported as an ES module AND still assigned to window.RewairAPI (kept for
  * the dev console / parity with the pre-Vite build). Module scope means the
  * top-level consts/functions below no longer leak to globals on their own. */
-const qs = new URLSearchParams(location.search);
-const BASE = qs.get('device') ? `http://${qs.get('device')}` : '';
+const initialHttp = initialHttpTarget(location);
+const BASE = initialHttp.base;
 
 async function httpReq(path, opts) {
   const r = await fetch(BASE + path, opts);
@@ -25,10 +27,13 @@ async function httpReq(path, opts) {
 }
 
 const httpTransport = { kind: 'http', request: httpReq };
-let activeTransport = httpTransport;
+let activeTransport = initialHttp.enabled ? httpTransport : null;
 let bleTransport = null;
 
 function req(path, opts) {
+  if (!activeTransport) {
+    return Promise.reject(new Error('Connect over Bluetooth first'));
+  }
   return activeTransport.request(path, opts);
 }
 
@@ -185,7 +190,8 @@ const RewairAPI = {
   reset: () => post('/api/reset', {}),
 
   bluetoothAvailable: () => typeof navigator !== 'undefined' && !!navigator.bluetooth,
-  transportKind: () => activeTransport.kind,
+  httpAvailable: () => initialHttp.enabled,
+  transportKind: () => activeTransport ? activeTransport.kind : 'none',
   async connectBluetooth() {
     if (es) { es.close(); es = null; }
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -195,12 +201,15 @@ const RewairAPI = {
     return capabilities;
   },
   useHttp() {
+    if (!initialHttp.enabled) throw new Error('No HTTP device is configured');
     if (bleTransport) bleTransport.disconnect();
     activeTransport = httpTransport;
   },
 
   /* Live updates: SSE with transparent polling fallback. */
   subscribe(onStatus) {
+    if (!activeTransport) return () => {};
+
     const startPolling = () => {
       if (pollTimer) return;
       const interval = activeTransport.kind === 'ble' ? 5000 : 2500;
