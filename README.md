@@ -37,6 +37,6 @@ The [Wiki](https://github.com/naorunaoru/rewair/wiki) has guides for setup,
 development, networking, MQTT, the web API, SPI flash, and recovery. Technical
 notes that need to evolve alongside the code remain in [`docs`](docs).
 
-> Rewair is experimental firmware. **Back up your device's stock firmware
-> before flashing**—Rewair does not distribute it. Start with the
+> Rewair is experimental firmware. **Back up both internal and external flash
+> before flashing**—Rewair does not distribute the stock images. Start with the
 > [installation guide](https://github.com/naorunaoru/rewair/wiki/Getting-Started).

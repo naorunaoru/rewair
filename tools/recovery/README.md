@@ -1,22 +1,29 @@
 # Recovery Scripts
 
-Back up and restore the stock EMW3165 F411 firmware around experimental
-flashing.
+Back up and restore the stock EMW3165 internal and external flash around
+experimental flashing.
 
 ## Step 0: back up your firmware
 
 Do this **before flashing anything**. Stock firmware is not distributed with
 Rewair. Without a dump from your own device, you cannot restore it to stock.
 
-With the CMSIS-DAP probe connected:
+Download and extract a Rewair release bundle, then connect the CMSIS-DAP probe.
+Use the included SPI-flash loader to capture both memories:
 
 ```sh
-tools/recovery/backup_stock_f411.zsh ../dumps/my-element-stock-f411.bin
+STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
+  tools/recovery/backup_stock_emw3165.zsh ../dumps/my-element-stock
 ```
 
-The script reads all 512 KiB of F411 internal flash, verifies the file size,
-and prints its SHA-256 checksum. Keep the dump outside the repository and make
-a second copy somewhere safe.
+The backup directory contains:
+
+- `f411-internal-flash.bin` — all 512 KiB of F411 internal flash
+- `external-spi-flash.bin` — all 2 MiB of external SPI flash
+
+Both are required: the stock firmware depends on data in external SPI flash.
+The script verifies both file sizes and prints their SHA-256 checksums. Keep
+the resulting directory somewhere safe.
 
 ## Restore scripts
 
@@ -24,26 +31,27 @@ If an experimental flash (such as the bare-metal console in
 `tools/legacy/emw3165_sensor_console` or a WICED build) leaves the module
 unable to boot, restore the dump you made at Step 0.
 
-Both scripts write raw binary data to F411 internal flash starting at
-`0x08000000` via `probe-rs download --binary-format bin --base-address
-0x08000000`, then reset the target.
-
-- `backup_stock_f411.zsh`: creates the required full-device backup.
-- `restore_stock_f411.zsh`: restores your full F411 backup.
+- `backup_stock_emw3165.zsh`: creates the complete internal-and-external backup.
+- `restore_stock_emw3165.zsh`: restores both memories from that backup.
+- `backup_stock_f411.zsh` / `restore_stock_f411.zsh`: internal-flash helpers.
 - `restore_stock_boot_sector.zsh`: restores just the first 16 KiB boot
   sector. Enough to get the original WICED application booting again if the
   stock DCT/app sectors past the boot sector are still intact and only the
   boot sector was overwritten.
 
-## Required input: `IMAGE`
+The combined restore writes external SPI flash first through the SRAM loader,
+then writes F411 internal flash with `probe-rs` and resets the target.
 
-Both restore scripts require `IMAGE=/path/to/*.bin` and refuse to run without
-it. There is no stock image bundled in this repository. A suggested layout is:
+## Backup layout
+
+There is no stock image bundled in this repository. A suggested layout is:
 
 ```text
 awair/
   rewair/                                   (this repo)
-  dumps/my-element-stock-f411.bin            (your backup, outside the repo)
+  dumps/my-element-stock/                     (your backup, outside the repo)
+    f411-internal-flash.bin
+    external-spi-flash.bin
   third_party/wiced-emw3165/
 ```
 
@@ -53,8 +61,10 @@ experimental flashing. Rewair does not provide a replacement stock image.
 ## Usage
 
 ```sh
-IMAGE=../dumps/my-element-stock-f411.bin tools/recovery/restore_stock_f411.zsh
-IMAGE=/path/to/my-boot-sector.bin tools/recovery/restore_stock_boot_sector.zsh
+STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
+  tools/recovery/restore_stock_emw3165.zsh ../dumps/my-element-stock
 ```
 
-Override `CHIP` (default `STM32F411CE`) or `SPEED` (default `950`) if needed.
+The `STUB_IMAGE` can be the `rewair-sflash-loader.bin` included in a release
+bundle or a locally built `waf_sflash_write-NoOS-NoNS-AWAIR.elf`. Override
+`SPEED` (default `950`) or `OPENOCD` if needed.

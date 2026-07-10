@@ -16,7 +16,7 @@
 #   openocd -f interface/cmsis-dap.cfg -c "transport select swd" \
 #           -f target/stm32f4x.cfg \
 #           -f scripts/sflash_write_swd.tcl \
-#           -c "sflash_stub_elf \"<path-to-waf_sflash_write.elf>\"" \
+#           -c "sflash_stub_image \"<path-to-loader.elf-or-bin>\"" \
 #           -c "sflash_write_file \"<image.bin>\" 0x136000" \
 #           -c "shutdown"
 #
@@ -64,14 +64,19 @@ array set RESULT {
     7          "Error during Read"
 }
 
-set sflash_stub_elf_path ""
+set sflash_stub_image_path ""
 set sflash_entry_address 0
 set sflash_stack_address 0
 set sflash_buffer_size   0
 
+proc sflash_stub_image { path } {
+    global sflash_stub_image_path
+    set sflash_stub_image_path $path
+}
+
+# Backward-compatible name used by the existing provisioning scripts.
 proc sflash_stub_elf { path } {
-    global sflash_stub_elf_path
-    set sflash_stub_elf_path $path
+    sflash_stub_image $path
 }
 
 proc sflash_memread32 { address } {
@@ -89,10 +94,11 @@ proc sflash_memread32 { address } {
 # how to talk to it.
 proc sflash_stub_init { } {
     global entry_address_loc stack_address_loc buffer_size_loc
-    global sflash_stub_elf_path sflash_entry_address sflash_stack_address sflash_buffer_size
+    global MemoryStart sflash_stub_image_path
+    global sflash_entry_address sflash_stack_address sflash_buffer_size
 
-    if { $sflash_stub_elf_path == "" } {
-        puts "Error: call sflash_stub_elf <path> before sflash_write_file / sflash_read_file"
+    if { $sflash_stub_image_path == "" } {
+        puts "Error: call sflash_stub_image <path> before sflash_write_file / sflash_read_file"
         exit 1
     }
 
@@ -100,8 +106,12 @@ proc sflash_stub_init { } {
     reset halt
     halt
 
-    puts "Loading sflash_write stub: $sflash_stub_elf_path"
-    load_image $sflash_stub_elf_path
+    puts "Loading sflash_write stub: $sflash_stub_image_path"
+    if { [string match "*.bin" $sflash_stub_image_path] } {
+        load_image $sflash_stub_image_path $MemoryStart bin
+    } else {
+        load_image $sflash_stub_image_path
+    }
 
     set sflash_entry_address [sflash_memread32 $entry_address_loc]
     set sflash_stack_address [sflash_memread32 $stack_address_loc]

@@ -132,7 +132,8 @@ Run these on the disposable bench unit before treating OTA as field-ready:
    boots restore the prior version.
 
 Keep the SWD recovery probe connected for steps 4–6. The final backstop remains
-`tools/recovery/restore_stock_f411.zsh`.
+the complete internal-and-external backup restored with
+`tools/recovery/restore_stock_emw3165.zsh`.
 
 On 2026-07-09, step 2 passed on the bench device at `192.168.1.242`: a
 426264-byte image with CRC32 `8af76b1b` was staged in 16 KiB chunks, installed,

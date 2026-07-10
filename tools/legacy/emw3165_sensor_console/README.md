@@ -67,11 +67,11 @@ tools/legacy/emw3165_sensor_console/flash_sensor_console.zsh
 
 Before flashing this console, create your own stock-firmware backup as
 described in `tools/recovery/README.md`. No stock image is bundled with Rewair.
-To restore your full backup or just its boot sector:
+To restore the complete internal-and-external backup:
 
 ```sh
-IMAGE=../dumps/my-element-stock-f411.bin tools/recovery/restore_stock_f411.zsh
-IMAGE=/path/to/my-boot-sector.bin tools/recovery/restore_stock_boot_sector.zsh
+STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
+  tools/recovery/restore_stock_emw3165.zsh ../dumps/my-element-stock
 ```
 
 ## Console Commands
