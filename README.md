@@ -35,13 +35,18 @@ What's inside of the Element?
   - `rewair_mqtt` / `rewair_mqtt_packet`: persisted MQTT broker settings,
     MQTT 3.1.1 transport, reconnect/last-will handling, retained telemetry,
     and Home Assistant discovery.
-  - `rewair_console`: serial console command parser.
+  - `rewair_console`: legacy console source retained for reference but no
+    longer built, because its USART1 is now dedicated to the BI201.
   - `rewair_score`: sensor-index-to-score math.
   - `rewair_walltime`: epoch/wall-clock helpers.
   - `rewair_fmt`: string/IP/MAC/SSID formatting helpers; host-testable core
     with firmware-only parts guarded by `REWAIR_HOST_BUILD`.
   - `rewair_json`: minimal JSON emitter and request-body reader (uses the
     vendored `jsmn.c`/`jsmn.h` parser).
+  - `rewair_api`: transport-neutral operation dispatch and JSON serializers
+    shared by HTTP and BLE.
+  - `rewair_ble` / `rewair_ble_proto`: production BI201 UART driver plus the
+    framed, CRC-protected BLE API transport. USART1 is dedicated to the BI201.
   - `rewair_drops`: dropped-frame counters.
   - `rewair_uifs`: reader for the packed web-UI image format (RWFS) on
     external SPI flash; host-testable, no WICED includes.
@@ -55,9 +60,9 @@ What's inside of the Element?
   external SPI flash pin mapping and the power-loss-safe OTA boot copier.
 - `webui/`: the web UI itself — Preact + htm, built with Vite, plain
   npm (no framework CLI). See [Web UI](#web-ui) below.
-- `tests/host/`: 9 host-buildable test suites (`test_drops`, `test_tz`,
+- `tests/host/`: 10 host-buildable test suites (`test_drops`, `test_tz`,
   `test_req`, `test_status`, `test_uifs`, `test_walltime`, `test_score`,
-  `test_ota`, `test_mqtt_packet`) that
+  `test_ota`, `test_mqtt_packet`, `test_ble_proto`) that
   compile the relevant `rewair_*.c` files directly with the system `cc`, no
   WICED/ARM toolchain required.
 - `scripts`:
@@ -74,6 +79,9 @@ What's inside of the Element?
     (SWD/CMSIS-DAP reimplementation of the WICED SDK's JTAG-only version).
   - `api_smoke.zsh`: curl+jq smoke test against a live device's web API and UI.
 - `tools/f103_debug`: SWD/GDB helpers for F103-side protocol tracing.
+- `wiced/apps/rewair/bi201_probe` and `tools/bi201`: standalone F411-to-BI201
+  UART probe, SWD mailbox reader, and macOS BLE/GATT/API clients. See
+  [`docs/bi201.md`](docs/bi201.md).
 - `tools/legacy/emw3165_sensor_console`: small bare-metal F411 fallback
   console used before WICED networking was working; still useful for
   isolating F103-vs-WICED protocol questions.
@@ -160,9 +168,9 @@ FLASH_DCT=1 scripts/flash_local_bridge_probe_rs.zsh
 ## Web UI
 
 The web UI (`webui/`) is a small Preact app, built with Vite, that talks to
-the device over the [web API](#web-api-summary) below. It ships from this
-repo unbuilt; you build it locally and flash the result to the device's
-external SPI flash.
+the device over HTTP or Web Bluetooth. It ships from this repo unbuilt; you
+can flash the result to the device's external SPI flash or publish `dist/` on
+an HTTPS static host for BLE access before the device has Wi-Fi.
 
 Local preview against a live device, no flashing required:
 
@@ -181,6 +189,15 @@ the `/api/debug/sflash` route are enabled out of the box because
 `wiced/apps/rewair/local_bridge/web_api.h` defines `REWAIR_API_CORS_DEV` at
 line 11 (comment: "ON during phase 1 bring-up; turn off for release"). To
 build a release without them, comment out that define in `web_api.h`.
+
+For BLE, open the same localhost page without a `device` query parameter and
+use **Connect over Bluetooth**. A normal no-Wi-Fi deployment must be hosted
+from a secure HTTPS origin; the Vite bundle uses relative asset URLs and can
+be published directly to GitHub Pages or another static host. After the Pages
+workflow lands on `main` and GitHub Pages is configured to use GitHub Actions,
+this repository publishes it at <https://naorunaoru.github.io/rewair/>. BLE is
+currently read-only while an authenticated session design is added; see
+[docs/bi201.md](docs/bi201.md).
 
 Build the production bundle (this is what actually ships to the device):
 
@@ -256,8 +273,13 @@ All routes below are in `wiced/apps/rewair/local_bridge/web_api.c`'s page
 database. POST routes accept a `text/plain`-labeled JSON body (to keep
 requests CORS-"simple") in addition to `application/json`.
 
+Capabilities, status, scan, and networks are implemented by the shared
+`rewair_api.c` core and are also available over BLE with the same JSON and
+status semantics.
+
 | Route | Method | Purpose |
 | --- | --- | --- |
+| `/api/capabilities` | GET | Transport/API version and currently enabled operations. |
 | `/api/status` | GET | Full live status snapshot: score, sensors, wifi, time, settings. |
 | `/api/scan` | GET | Trigger/read a Wi-Fi scan, returns an array of nearby APs. |
 | `/api/networks` | GET | List saved Wi-Fi networks (DCT-backed). |
@@ -350,9 +372,10 @@ mosquitto_sub -h <broker> -u <user> -P '<password>' -v \
 
 ## Current State
 
-The web API, self-contained UI, AP setup portal, and F411 OTA implementation
-are built and host-verified; OTA's destructive power-loss/rollback gauntlet is
-still a bench checkpoint. The F103 sensor board's `SENS` stream
+The web API, self-contained HTTP/BLE UI, read-only BI201 API, AP setup portal,
+and F411 OTA implementation are built and bench-verified. BLE mutations remain
+locked pending application-layer authentication, and OTA's destructive
+power-loss/rollback gauntlet is still a bench checkpoint. The F103 sensor board's `SENS` stream
 still occasionally stalls after `REDY`/`TEST` on boot — intermittent, not
 fully root-caused. See [docs/status.md](docs/status.md) for the current
 detailed state and diagnostics.

@@ -15,6 +15,8 @@
 #include "wiced_management.h"
 #include "wiced_tcpip.h"
 #include "internal/wiced_internal_api.h"
+#include "wiced_apps_common.h"
+#include "wiced_dct_common.h"
 #include "sntp.h"
 #include "rewair_state.h"
 #include "rewair_tz.h"
@@ -27,7 +29,7 @@
 #include "rewair_wifi_dct.h"
 #include "rewair_wifi_scan.h"
 #include "rewair_wifi_join.h"
-#include "rewair_console.h"
+#include "rewair_ble.h"
 #include "rewair_ota.h"
 #include "rewair_ota_layout.h"
 #include "rewair_sflash.h"
@@ -39,7 +41,6 @@
 
 #define SENSOR_RX_BUFFER_SIZE 1024u
 #define SENSOR_THREAD_STACK_SIZE 4096u
-#define CONSOLE_THREAD_STACK_SIZE 4096u
 #define NETWORK_THREAD_STACK_SIZE 6144u
 /* CONSOLE_LINE_MAX, CONSOLE_ARG_MAX moved to rewair_console.c (Phase 2
  * Task 11, pure move) -- only the console tokenizer/dispatcher used them. */
@@ -55,7 +56,6 @@
 
 static sensor_rx_t sensor_rx;
 static wiced_thread_t sensor_thread;
-static wiced_thread_t console_thread;
 static wiced_thread_t network_thread;
 /* sensor_uart_tx_mutex now lives in rewair_frames.c (Phase 2 Task 8, primary
  * writer: sensor_uart_send_frame_bytes); declared extern in rewair_frames.h,
@@ -139,6 +139,66 @@ static uint32_t sensor_raw_trace_reported = 0u;
 volatile uint32_t wifi_time_synced = 0u;
 volatile uint32_t wifi_last_ntp_sync_ms = 0u;
 static volatile uint32_t wifi_network_ready_ms = 0u;
+
+/* The Wi-Fi firmware is read through WICED's multi-app table in external
+ * flash.  Existing units have the DCT slot pointing at the SDK default LUT
+ * address (zero), so migrate just that one DCT entry before WLAN starts.
+ * wiced_dct_set_app_header_location() uses the SDK's redundant-DCT update
+ * path and therefore preserves Wi-Fi credentials and every other section. */
+static wiced_result_t wifi_firmware_prepare_dct( void )
+{
+    image_location_t current;
+    image_location_t desired;
+    wiced_result_t result;
+    uint32_t desired_header = REWAIR_WIFI_FW_LUT_ADDR +
+                              (uint32_t)sizeof( app_header_t ) * DCT_WIFI_FIRMWARE_INDEX;
+
+    memset( &current, 0, sizeof( current ) );
+    result = wiced_dct_get_app_header_location( DCT_WIFI_FIRMWARE_INDEX, &current );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi-fw] DCT read failed: %d\n", (int)result );
+        return result;
+    }
+
+    if ( current.id == EXTERNAL_FIXED_LOCATION &&
+         current.detail.external_fixed.location == desired_header )
+    {
+        printf( "[wifi-fw] external header ready at 0x%lx\n",
+                (unsigned long)desired_header );
+        return WICED_SUCCESS;
+    }
+
+    memset( &desired, 0, sizeof( desired ) );
+    desired.id = EXTERNAL_FIXED_LOCATION;
+    desired.detail.external_fixed.location = desired_header;
+
+    printf( "[wifi-fw] moving DCT header from id=%d addr=0x%lx to 0x%lx\n",
+            (int)current.id,
+            (unsigned long)current.detail.external_fixed.location,
+            (unsigned long)desired_header );
+    result = wiced_dct_set_app_header_location( DCT_WIFI_FIRMWARE_INDEX, &desired );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[wifi-fw] DCT update failed: %d\n", (int)result );
+        return result;
+    }
+
+    memset( &current, 0, sizeof( current ) );
+    result = wiced_dct_get_app_header_location( DCT_WIFI_FIRMWARE_INDEX, &current );
+    if ( result != WICED_SUCCESS || current.id != EXTERNAL_FIXED_LOCATION ||
+         current.detail.external_fixed.location != desired_header )
+    {
+        printf( "[wifi-fw] DCT verify failed: %d id=%d addr=0x%lx\n",
+                (int)result, (int)current.id,
+                (unsigned long)current.detail.external_fixed.location );
+        return WICED_ERROR;
+    }
+
+    printf( "[wifi-fw] DCT header moved and verified at 0x%lx\n",
+            (unsigned long)desired_header );
+    return WICED_SUCCESS;
+}
 
 /* current_tz_rule, current_tz_rule_valid, and sensor_set_tz_rule() now live
  * in rewair_frames.c (Phase 2 Task 8, primary writer: sensor_set_tz_rule);
@@ -1031,6 +1091,11 @@ void application_start( void )
         return;
     }
 
+    if ( wifi_firmware_prepare_dct( ) != WICED_SUCCESS )
+    {
+        return;
+    }
+
     rewair_state_init( );
 
     if ( wiced_rtos_init_mutex( &dct_wifi_mutex ) != WICED_SUCCESS )
@@ -1061,7 +1126,7 @@ void application_start( void )
     setvbuf( stderr, NULL, _IONBF, 0 );
 
     printf( "\nRewair WICED local bridge\n" );
-    printf( "console: USART1 PB6 TX / PA10 RX, 115200 8N1\n" );
+    printf( "ble:     USART1 PB6 TX / PA10 RX, 115200 8N1\n" );
     printf( "sensor:  USART2 PA2 TX / PA3 RX, 115200 8N1\n" );
 
     if ( sensor_uart_start( ) != WICED_SUCCESS )
@@ -1076,6 +1141,11 @@ void application_start( void )
         return;
     }
 
+    if ( rewair_ble_start( ) != WICED_SUCCESS )
+    {
+        printf( "BI201 start failed\n" );
+    }
+
     result = wiced_wlan_connectivity_init( );
     if ( result != WICED_SUCCESS )
     {
@@ -1083,13 +1153,6 @@ void application_start( void )
     }
 
     rewair_mqtt_start( );
-
-    if ( wiced_rtos_create_thread( &console_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "console",
-                                   console_thread_main, CONSOLE_THREAD_STACK_SIZE, NULL ) != WICED_SUCCESS )
-    {
-        printf( "console thread start failed\n" );
-    }
-
     if ( wiced_rtos_create_thread( &network_thread, WICED_DEFAULT_LIBRARY_PRIORITY, "network",
                                    network_thread_main, NETWORK_THREAD_STACK_SIZE, NULL ) != WICED_SUCCESS )
     {

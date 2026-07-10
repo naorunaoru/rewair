@@ -33,6 +33,22 @@ credential reset is intentional. Build and flash the current portal once too:
 scripts/flash_webui.zsh
 ```
 
+The WICED WLAN firmware is kept in external SPI flash. Build the lookup table
+alongside the application, then provision and fully read back both external
+images before flashing an application that depends on them:
+
+```sh
+scripts/build_local_bridge.zsh
+scripts/flash_wifi_firmware_sflash.zsh
+scripts/flash_local_bridge_probe_rs.zsh
+```
+
+`flash_wifi_firmware_sflash.zsh` saves the previous `0x101000–0x135FFF`
+contents under `/tmp`, writes the 4 KiB WICED lookup table and 210412-byte
+BCM43362A2 image, then verifies the whole payload byte for byte. On first boot,
+the application atomically updates only `DCT_WIFI_FIRMWARE_INDEX` from the old
+lookup-table address to `0x101088`; saved Wi-Fi credentials are unchanged.
+
 After that bootstrap, open the device UI, choose Settings → Firmware →
 Update, and select:
 
@@ -60,7 +76,9 @@ python3 scripts/ota_upload.py 192.168.1.242 \
 | `0x000000–0x07FFFF` | Incoming F411 image; header at `0x000000`, data at `0x000100` |
 | `0x080000–0x0FFFFF` | Full 464 KB known-good internal-app backup |
 | `0x100000–0x100FFF` | Append-only, CRC-protected OTA state journal |
-| `0x101000–0x1BFFFF` | Reserved/free |
+| `0x101000–0x101FFF` | WICED apps lookup table |
+| `0x102000–0x135FFF` | BCM43362A2 Wi-Fi firmware (52 sectors, 210412 data bytes) |
+| `0x136000–0x1BFFFF` | Reserved/free |
 | `0x1C0000–0x1FFFFF` | RWFS web UI; firmware write guard makes this unreachable to OTA |
 
 The browser calculates CRC32, begins a session, then POSTs sequential 16 KiB
