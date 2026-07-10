@@ -35,8 +35,8 @@ Date: 2026-07-10.
   with a change-notification hook.
 - Full web API (`wiced/apps/rewair/local_bridge/web_api.c`): status, scan,
   networks, join/forget/priority, settings, time, disp, reset, SSE stream at
-  `/api/events`. See the README's [Web API
-  Summary](../README.md#web-api-summary) for the route table.
+  `/api/events`. See the Wiki's [Web UI and API](https://github.com/naorunaoru/rewair/wiki/Web-UI-and-API)
+  page for the route table.
 - Production BI201 transport (`rewair_ble.c` / `rewair_ble_proto.c`): COBS
   framing, CRC32, fragmentation, ACK-paced responses, and HTTP-compatible
   result statuses over the module's transparent GATT UART bridge. The shared
@@ -57,8 +57,8 @@ Date: 2026-07-10.
   (skipped while a client is on the AP). `/api/join` in AP mode stores
   credentials (from the scan cache, no live probe) and switches to STA
   asynchronously (~1 s); `/api/reset` clears credentials and reboots back
-  into the setup AP. See the README's [AP Setup
-  Mode](../README.md#ap-setup-mode) section.
+  into the setup AP. See the Wiki's [Networking and MQTT](https://github.com/naorunaoru/rewair/wiki/Networking-and-MQTT)
+  page.
 - F411 OTA is implemented through the portal: guarded firmware-side SPI
   writes, chunked upload/readback verification, boot-time known-good backup,
   idempotent internal-flash copy, and three-attempt trial rollback. It builds
@@ -218,7 +218,9 @@ tools/f103_debug/trace_f103_uart_handlers.zsh
 ```
 
 Fallback bare-metal sensor console (isolates F103 protocol behavior from the
-WICED UART/DMA path; needs arm-none-eabi- toolchain on PATH — see README prerequisites):
+WICED UART/DMA path; needs an `arm-none-eabi` toolchain on `PATH` — see the
+Wiki's [Building and Flashing](https://github.com/naorunaoru/rewair/wiki/Building-and-Flashing)
+page):
 
 ```sh
 make -C tools/legacy/emw3165_sensor_console
