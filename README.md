@@ -164,6 +164,26 @@ credentials. To intentionally wipe/reseed DCT:
 FLASH_DCT=1 scripts/flash_local_bridge_probe_rs.zsh
 ```
 
+## Precompiled Firmware
+
+Version tags (`v*`) build and publish a complete EMW3165 firmware bundle to
+GitHub Releases. Each release contains the bootloader and application for
+STM32 internal flash, the external-flash lookup table and BCM43362A2 firmware,
+the SRAM SPI-flash loader, SHA-256 checksums, and a machine-readable
+`manifest.json` for the browser flasher.
+
+The normal install deliberately preserves DCT. `rewair-default-dct.bin` is a
+separate destructive recovery asset because it resets saved configuration and
+contains a build-generated MAC address; it must not be installed unchanged on
+multiple units. The authoritative addresses and install sets are recorded in
+the release manifest rather than duplicated in the web app.
+
+To assemble the same bundle locally after a firmware build:
+
+```sh
+VERSION=dev scripts/package_release.zsh
+```
+
 ## Web UI
 
 The web UI (`webui/`) is a small Preact app, built with Vite, that talks to the

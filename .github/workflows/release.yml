@@ -1,0 +1,83 @@
+name: Build firmware release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  WICED_SDK_REVISION: 416fee12d45b4ac6291ea0ce6f4f08fdb80b37b9
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Rewair
+        uses: actions/checkout@v6
+
+      - name: Check out WICED SDK
+        uses: actions/checkout@v6
+        with:
+          repository: kamejoko80/wiced-emw3165
+          ref: ${{ env.WICED_SDK_REVISION }}
+          path: third_party/wiced-emw3165
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Install host tools
+        run: sudo apt-get update && sudo apt-get install --yes rsync zsh
+
+      - name: Install web dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Run host and web tests
+        run: |
+          make -C tests/host clean all
+          npm --prefix webui test
+
+      - name: Build firmware
+        env:
+          SDK_DIR: ${{ github.workspace }}/third_party/wiced-emw3165
+          HOST_OS: Linux64
+        run: scripts/build_local_bridge.zsh
+
+      - name: Package release assets
+        env:
+          SDK_DIR: ${{ github.workspace }}/third_party/wiced-emw3165
+          HOST_OS: Linux64
+          OUTPUT_DIR: ${{ github.workspace }}/build/release
+          VERSION: ${{ github.ref_name }}
+          SOURCE_REVISION: ${{ github.sha }}
+          SDK_REVISION: ${{ env.WICED_SDK_REVISION }}
+        run: scripts/package_release.zsh
+
+      - name: Verify packaged checksums
+        working-directory: build/release
+        run: sha256sum --check SHA256SUMS.txt
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: rewair-${{ github.ref_name }}
+          path: build/release/
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}"
+          build/release/*
+          --verify-tag
+          --generate-notes
+          --title "Rewair ${{ github.ref_name }}"
