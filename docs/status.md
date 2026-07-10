@@ -11,9 +11,9 @@ Date: 2026-07-10.
   `rewair_ble_diag`.
 - F411 to F103 link: USART2, `PA2` TX / `PA3` RX, 115200 8N1.
 - F103 reset from F411 appears to be on F411 `PB12`.
-- External SPI flash: Macronix MX25L1606E, 2 MiB, JEDEC ID `c2 20 15`. SPI1,
-  pins empirically derived (differ from the reference WICED platform, which
-  is wired differently): CS `PA15` (software GPIO, active low), MOSI `PA7`,
+- External SPI flash: Macronix MX25L1606E, 2 MiB, JEDEC ID `c2 20 15`. The
+  SPI1 pins follow the EMW3165 datasheet and differ from the reference WICED
+  platform: CS `PA15` (software GPIO, active low), MOSI `PA7`,
   MISO `PB4`, SCK `PB3`. `PA15`/`PB3`/`PB4` double as JTAG TDI/TDO/NTRST, but
   repurposing them is safe here since on-board debug is SWD-only.
 

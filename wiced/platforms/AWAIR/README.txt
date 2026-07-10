@@ -31,11 +31,11 @@ EVB Features
   18-pin Expansion header
 
 --------------------------------------------
-Awair board notes (reverse-engineered)
+Awair / EMW3165 board notes
 --------------------------------------------
 
-The actual Awair "The First Rewair" hardware differs from the reference
-BCM943362WCD4 layout above for the external SPI flash:
+The EMW3165 datasheet specifies a different external-SPI-flash pin mapping
+from the BCM943362WCD4 reference platform above:
 
   External SPI flash : Macronix MX25L1606E, 2 MiB, JEDEC ID c2 20 15
   SPI1 CS   (SSN)  : PA15  (WICED_GPIO_15) -- software GPIO, active low

@@ -54,9 +54,9 @@ keeping the stock Awair F103/display firmware and UART protocol reusable.
 ## External SPI Flash
 
 The board carries a Macronix MX25L1606E (2 MiB, JEDEC `c2 20 15`) external
-SPI flash on SPI1. Pins (empirically derived, not from a reference
-schematic — the stock BCM943362WCD4 reference platform this WICED port is
-based on wires its own SPI flash differently):
+SPI flash on SPI1. The pin mapping comes from the EMW3165 datasheet; the stock
+BCM943362WCD4 reference platform this WICED port is based on wires its own SPI
+flash differently:
 
 - CS (SSN): `PA15` (`WICED_GPIO_15`), driven as a plain software GPIO,
   active low.
