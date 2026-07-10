@@ -22,11 +22,20 @@
 #define API_STATUS_BUF    1024u
 #define API_LIST_BUF      2048u
 #define API_WORKER_STACK  6000u
+#define API_SSE_THREAD_STACK 3072u
+#define API_SSE_INTERVAL_MS  2500u
+#define API_SSE_MAX_CLIENTS   2u
 #define API_MAX_SAVED_NETWORKS CONFIG_AP_LIST_SIZE
 
 static wiced_http_server_t http_server;
-static uint32_t            server_started = 0u;
+static volatile uint32_t   server_started = 0u;
 static uint8_t             server_init_done = 0u;
+static wiced_thread_t      sse_thread;
+static wiced_mutex_t       sse_mutex;
+static wiced_tcp_socket_t* sse_sockets[API_SSE_MAX_CLIENTS];
+static uint8_t             sse_init_done = 0u;
+static char                sse_json[API_STATUS_BUF];
+static char                sse_frame[API_STATUS_BUF + 40u];
 
 #ifdef REWAIR_API_CORS_DEV
 #define API_CORS_HEADER "Access-Control-Allow-Origin: *\r\n"
@@ -1319,25 +1328,131 @@ static int32_t api_debug_sflash_handler( const char* url, wiced_http_response_st
 #endif /* REWAIR_API_CORS_DEV */
 
 /* ---- GET /api/events (SSE) ----
- *
- * The stock WICED HTTP daemon exposes no application disconnect callback and
- * recycles its fixed socket objects after a peer closes. Retaining a socket
- * pointer for a conventional long-lived SSE broadcaster can therefore turn
- * it into a pointer to an unrelated, newer request. A later heartbeat may
- * write to or disconnect that new request and destabilise the networking
- * worker.
- *
- * Serve one complete event and close instead. EventSource reconnects after
- * the advertised retry interval, preserving live updates without keeping a
- * socket pointer beyond this handler's lifetime. */
-static int32_t api_events_handler( const char* url, wiced_http_response_stream_t* stream,
-                                   void* arg, wiced_http_message_body_t* http_data )
+ * The SDK's URL worker constructs its response stream on the stack, so the SSE
+ * sender retains the accepted socket (not the stream) and creates a fresh local
+ * stream for each event. A dedicated thread keeps the request open without
+ * blocking the HTTP URL worker that serves the rest of the API. */
+static wiced_result_t api_sse_write_event( wiced_http_response_stream_t* stream )
 {
-    static char json[API_STATUS_BUF];
-    static char frame[API_STATUS_BUF + 32u];
     uint16_t status = 500u;
     int len;
     int n;
+
+    len = rewair_api_execute( REWAIR_API_OP_STATUS, NULL, 0u,
+                              sse_json, sizeof( sse_json ), &status );
+    if ( len < 0 || status != 200u )
+    {
+        return WICED_ERROR;
+    }
+
+    n = snprintf( sse_frame, sizeof( sse_frame ), "data: %s\nretry: %u\n\n",
+                  sse_json, (unsigned int)API_SSE_INTERVAL_MS );
+    if ( n < 0 || n >= (int)sizeof( sse_frame ) )
+    {
+        return WICED_ERROR;
+    }
+    return wiced_http_response_stream_write( stream, sse_frame, (uint32_t)n );
+}
+
+static wiced_result_t api_sse_disconnect_callback( wiced_tcp_socket_t* socket, void* arg )
+{
+    uint32_t i;
+
+    wiced_rtos_lock_mutex( &sse_mutex );
+    for ( i = 0u; i < API_SSE_MAX_CLIENTS; i++ )
+    {
+        if ( sse_sockets[i] == socket )
+        {
+            sse_sockets[i] = NULL;
+        }
+    }
+    wiced_rtos_unlock_mutex( &sse_mutex );
+    return wiced_http_server_queue_disconnect_request( (wiced_http_server_t*)arg, socket );
+}
+
+static void api_sse_thread_main( uint32_t arg )
+{
+    (void)arg;
+
+    for ( ;; )
+    {
+        wiced_tcp_socket_t* failed[API_SSE_MAX_CLIENTS] = { NULL };
+        uint32_t failed_count = 0u;
+        uint32_t i;
+
+        wiced_rtos_delay_milliseconds( API_SSE_INTERVAL_MS );
+        wiced_rtos_lock_mutex( &sse_mutex );
+        if ( server_started != 0u )
+        {
+            for ( i = 0u; i < API_SSE_MAX_CLIENTS; i++ )
+            {
+                wiced_http_response_stream_t stream;
+                wiced_result_t result;
+
+                if ( sse_sockets[i] == NULL )
+                {
+                    continue;
+                }
+                wiced_http_response_stream_init( &stream, sse_sockets[i] );
+                result = api_sse_write_event( &stream );
+                if ( result == WICED_SUCCESS )
+                {
+                    result = wiced_http_response_stream_flush( &stream );
+                }
+                wiced_http_response_stream_deinit( &stream );
+                if ( result != WICED_SUCCESS )
+                {
+                    failed[failed_count++] = sse_sockets[i];
+                    sse_sockets[i] = NULL;
+                }
+            }
+        }
+        wiced_rtos_unlock_mutex( &sse_mutex );
+        for ( i = 0u; i < failed_count; i++ )
+        {
+            (void)wiced_http_server_queue_disconnect_request( &http_server, failed[i] );
+        }
+    }
+}
+
+static wiced_result_t api_sse_init( void )
+{
+    wiced_result_t result;
+
+    if ( sse_init_done != 0u )
+    {
+        return WICED_SUCCESS;
+    }
+    result = wiced_rtos_init_mutex( &sse_mutex );
+    if ( result != WICED_SUCCESS )
+    {
+        return result;
+    }
+    result = wiced_rtos_create_thread( &sse_thread, WICED_DEFAULT_LIBRARY_PRIORITY,
+                                       "web sse", api_sse_thread_main,
+                                       API_SSE_THREAD_STACK, NULL );
+    if ( result != WICED_SUCCESS )
+    {
+        wiced_rtos_deinit_mutex( &sse_mutex );
+        return result;
+    }
+    sse_init_done = 1u;
+    return WICED_SUCCESS;
+}
+
+static int32_t api_events_handler( const char* url, wiced_http_response_stream_t* stream,
+                                   void* arg, wiced_http_message_body_t* http_data )
+{
+    static const char headers[] =
+        HTTP_HEADER_200 "\r\n"
+        "Content-Type: text/event-stream\r\n"
+        "Cache-Control: no-cache\r\n"
+        "Connection: keep-alive\r\n"
+        API_CORS_HEADER
+        "\r\n";
+    wiced_result_t result;
+    wiced_tcp_socket_t* socket;
+    uint32_t slot;
 
     (void)url; (void)arg;
     if ( !method_is( http_data, WICED_HTTP_GET_REQUEST ) )
@@ -1346,24 +1461,45 @@ static int32_t api_events_handler( const char* url, wiced_http_response_stream_t
         return 0;
     }
 
-    len = rewair_api_execute( REWAIR_API_OP_STATUS, NULL, 0u,
-                              json, sizeof( json ), &status );
-    if ( len < 0 || status != 200u )
+    wiced_rtos_lock_mutex( &sse_mutex );
+    for ( slot = 0u; slot < API_SSE_MAX_CLIENTS; slot++ )
     {
-        api_send_error( stream, HTTP_HEADER_500, "status unavailable" );
+        if ( sse_sockets[slot] == NULL )
+        {
+            break;
+        }
+    }
+    if ( slot == API_SSE_MAX_CLIENTS )
+    {
+        wiced_rtos_unlock_mutex( &sse_mutex );
+        api_send_error( stream, "HTTP/1.1 503 Service Unavailable", "event stream limit reached" );
         return 0;
     }
 
-    n = snprintf( frame, sizeof( frame ), "data: %s\nretry: 2500\n\n", json );
-    if ( n < 0 || n >= (int)sizeof( frame ) )
+    socket = stream->tcp_stream.socket;
+    sse_sockets[slot] = socket;
+    socket->callbacks[WICED_TCP_DISCONNECT_CALLBACK_INDEX] =
+        (uint32_t)api_sse_disconnect_callback;
+    (void)wiced_tcp_enable_keepalive( socket, 2u, 2u, 5u );
+    result = wiced_http_response_stream_write( stream, headers,
+                                                (uint32_t)( sizeof( headers ) - 1u ) );
+    if ( result == WICED_SUCCESS )
     {
-        api_send_error( stream, HTTP_HEADER_500, "status unavailable" );
-        return 0;
+        result = api_sse_write_event( stream );
     }
-
-    api_send( stream, HTTP_HEADER_200, "text/event-stream", frame, (uint32_t)n );
-    wiced_http_response_stream_flush( stream );
-    wiced_http_server_queue_disconnect_request( &http_server, stream->tcp_stream.socket );
+    if ( result == WICED_SUCCESS )
+    {
+        result = wiced_http_response_stream_flush( stream );
+    }
+    if ( result != WICED_SUCCESS )
+    {
+        sse_sockets[slot] = NULL;
+    }
+    wiced_rtos_unlock_mutex( &sse_mutex );
+    if ( result != WICED_SUCCESS )
+    {
+        (void)wiced_http_server_queue_disconnect_request( &http_server, socket );
+    }
     return 0;
 }
 
@@ -1468,6 +1604,12 @@ wiced_result_t rewair_web_api_start( wiced_interface_t interface )
     if ( server_init_done == 0u )
     {
         web_ui_init( );
+        result = api_sse_init( );
+        if ( result != WICED_SUCCESS )
+        {
+            printf( "[web] SSE worker start FAILED result=%d\n", (int)result );
+            return result;
+        }
         server_init_done = 1u;
     }
 
@@ -1496,6 +1638,9 @@ wiced_result_t rewair_web_api_stop( void )
     }
 
     server_started = 0u;
+    wiced_rtos_lock_mutex( &sse_mutex );
+    memset( sse_sockets, 0, sizeof( sse_sockets ) );
+    wiced_rtos_unlock_mutex( &sse_mutex );
     printf( "[web] http server stopping\n" );
     return wiced_http_server_stop( &http_server );
 }
