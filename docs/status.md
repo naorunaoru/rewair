@@ -44,8 +44,8 @@ Date: 2026-07-10.
   over both HTTP and BLE. Mutations are deliberately locked until an
   authenticated session is implemented.
 - Web UI (`webui/`, Preact + Vite) builds to a packed RWFS image and is
-  served by the device itself from external SPI flash at `/`, `/app.js`,
-  `/rewair.css`. The same bundle can run from an HTTPS static host and connect
+  linked into the F411 application and served directly from internal flash at
+  `/`, `/app.js`, `/rewair.css`. The same bundle can run from an HTTPS static host and connect
   through Web Bluetooth when the device has no Wi-Fi. A GitHub Actions
   workflow tests, builds, and publishes it to GitHub Pages after `webui/`
   changes land on `main`.
@@ -82,12 +82,11 @@ Date: 2026-07-10.
   `test_ota`, `test_mqtt_packet`, `test_ble_proto`), all
   passing against a clean `make -C tests/host`.
 - `scripts/api_smoke.zsh`: 21-check smoke test against a live device,
-  covering both the web API and the sflash-served UI.
+  covering both the web API and the embedded UI.
 - External SPI flash read/write tooling: `scripts/flash_sflash_openocd.zsh`
   (OpenOCD + WICED sflash-write RAM stub, SWD/CMSIS-DAP, with readback
-  verification) and `scripts/flash_webui.zsh` (build + flash the UI image in
-  one step). A dev-gated `GET /api/debug/sflash` HTTP route and console
-  commands expose raw readback for debugging.
+  verification). A dev-gated `GET /api/debug/sflash` HTTP route and console
+  commands expose raw readback for debugging; `0x136000–0x1FFFFF` is free.
 
 ## Current Problem
 
@@ -178,15 +177,12 @@ scripts/flash_local_bridge_probe_rs.zsh
 Preserve DCT by default. Use `FLASH_DCT=1` only when intentionally resetting
 stored Wi-Fi credentials.
 
-Build and flash the web UI:
+Install web dependencies once; subsequent firmware builds rebuild and embed the UI:
 
 ```sh
-cd webui && npm ci && npm run build && cd ..
-scripts/flash_webui.zsh
+cd webui && npm ci && cd ..
+scripts/build_local_bridge.zsh
 ```
-
-(`flash_webui.zsh` already runs `npm run build` itself; the manual `npm ci`
-step above is only needed the first time, to install dependencies.)
 
 After the one-time OTA bootloader bootstrap, subsequent F411 updates can be
 installed from Settings → Firmware in that web UI. See `docs/ota.md`.

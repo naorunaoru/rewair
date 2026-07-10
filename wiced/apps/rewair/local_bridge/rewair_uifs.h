@@ -1,8 +1,8 @@
 #pragma once
 
 /*
- * RWFS: a minimal packed-image format for serving the web UI out of external
- * SPI flash. On-disk layout (all fields little-endian):
+ * RWFS: a minimal packed-image format for serving the web UI from a bounded
+ * read-only byte source. On-disk layout (all fields little-endian):
  *
  *   offset 0: header
  *     char     magic[4]     "RWF1"

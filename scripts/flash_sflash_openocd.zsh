@@ -9,9 +9,8 @@
 #
 # Env:
 #   REWAIR_IP    device IP for readback verification (default 192.168.1.242)
-#   FORCE=1      allow addr < 0x1C0000 (the UI region we own); refused
-#                otherwise, since lower addresses contain OTA staging,
-#                rollback, journal, and other reserved content.
+#   FORCE=1      allow addr < 0x136000; refused otherwise because lower
+#                addresses contain OTA staging/rollback/journal and WLAN data.
 #   OPENOCD      OpenOCD executable (auto-detected, including an unlinked
 #                Homebrew open-ocd formula)
 #   SDK_DIR      path to the WICED SDK checkout (default ../third_party/wiced-emw3165)
@@ -48,7 +47,7 @@ if [[ -z "$OPENOCD" || ! -x "$OPENOCD" ]]; then
     exit 127
 fi
 
-UI_REGION_START=0x1C0000
+FREE_REGION_START=0x136000
 
 if [[ $# -ne 2 ]]; then
     print -u2 -r -- "usage: $0 <image-file> <hexaddr>"
@@ -80,9 +79,9 @@ if (( addr >= device_capacity || image_size > device_capacity - addr )); then
     exit 1
 fi
 
-if (( addr < UI_REGION_START )) && [[ "$FORCE" != "1" ]]; then
-    print -u2 -r -- "refusing to write below the UI region (0x$(printf %x $UI_REGION_START)): 0x$(printf %x $addr) is outside it."
-    print -u2 -r -- "0x000000-0x1BFFFF contains OTA staging, rollback, journal, and other reserved content."
+if (( addr < FREE_REGION_START )) && [[ "$FORCE" != "1" ]]; then
+    print -u2 -r -- "refusing to write below the free region (0x$(printf %x $FREE_REGION_START)): 0x$(printf %x $addr) is reserved."
+    print -u2 -r -- "0x000000-0x135FFF contains OTA staging, rollback, journal, and WLAN data."
     print -u2 -r -- "Set FORCE=1 to override."
     exit 1
 fi

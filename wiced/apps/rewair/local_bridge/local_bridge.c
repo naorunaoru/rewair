@@ -206,12 +206,12 @@ static wiced_result_t wifi_firmware_prepare_dct( void )
  * application_start's DST-recheck loop below reads them directly. */
 static rewair_settings_t current_settings;
 
-/* ---- External SPI flash (Macronix MX25L1606E) -- UI reads + OTA writes ----
+/* ---- External SPI flash (Macronix MX25L1606E) -- OTA/WLAN data ----
  * Lazily initialized on first use by either the console "sflash" commands or
  * the /api/debug/sflash route (web_api.c); both share this handle so the SPI
- * peripheral is only brought up once. OTA enables the driver's write path,
- * but the public wrappers permanently reject every write at or above the
- * 0x1c0000 RWFS UI boundary. */
+ * peripheral is only brought up once. OTA enables the driver's write path;
+ * callers select their owned partition while these wrappers enforce physical
+ * device bounds and serialize access. */
 static sflash_handle_t rewair_sflash_handle;
 static uint32_t         rewair_sflash_inited = 0u;
 
@@ -320,8 +320,7 @@ int rewair_sflash_write_bytes( uint32_t addr, const uint8_t* data, uint32_t size
 {
     int rc;
 
-    if ( data == NULL || rewair_sflash_bounds_ok( addr, size ) == 0 ||
-         addr >= REWAIR_OTA_UI_ADDR || size > REWAIR_OTA_UI_ADDR - addr )
+    if ( data == NULL || rewair_sflash_bounds_ok( addr, size ) == 0 )
     {
         return -1;
     }
@@ -343,8 +342,7 @@ int rewair_sflash_erase_range( uint32_t addr, uint32_t size )
 
     if ( rewair_sflash_bounds_ok( addr, size ) == 0 ||
          ( addr & ( REWAIR_OTA_SFLASH_SECTOR_SIZE - 1u ) ) != 0u ||
-         ( size & ( REWAIR_OTA_SFLASH_SECTOR_SIZE - 1u ) ) != 0u ||
-         addr >= REWAIR_OTA_UI_ADDR || size > REWAIR_OTA_UI_ADDR - addr )
+         ( size & ( REWAIR_OTA_SFLASH_SECTOR_SIZE - 1u ) ) != 0u )
     {
         return -1;
     }

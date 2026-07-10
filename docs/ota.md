@@ -1,8 +1,9 @@
 # F411 firmware OTA
 
 Rewair can update the STM32F411 application from the web portal with the raw
-`.bin` produced by `scripts/build_local_bridge.zsh`. OTA updates the F411/WICED
-application only; F103 firmware and the RWFS web-UI image are separate.
+`.bin` produced by `scripts/build_local_bridge.zsh`. The deterministic RWFS
+web UI is linked into that F411/WICED application image, so one OTA installs a
+matching firmware and portal. F103 firmware remains separate.
 
 ## Architecture choice
 
@@ -25,13 +26,9 @@ scripts/build_local_bridge.zsh
 scripts/flash_local_bridge_probe_rs.zsh
 ```
 
-The flash script updates the bootloader and app while preserving DCT/Wi-Fi
-credentials by default. Do not set `FLASH_DCT=1` for this bootstrap unless a
-credential reset is intentional. Build and flash the current portal once too:
-
-```sh
-scripts/flash_webui.zsh
-```
+The flash script updates the bootloader, application, and embedded portal while
+preserving DCT/Wi-Fi credentials by default. Do not set `FLASH_DCT=1` for this
+bootstrap unless a credential reset is intentional.
 
 The WICED WLAN firmware is kept in external SPI flash. Build the lookup table
 alongside the application, then provision and fully read back both external
@@ -78,8 +75,7 @@ python3 scripts/ota_upload.py 192.168.1.242 \
 | `0x100000–0x100FFF` | Append-only, CRC-protected OTA state journal |
 | `0x101000–0x101FFF` | WICED apps lookup table |
 | `0x102000–0x135FFF` | BCM43362A2 Wi-Fi firmware (52 sectors, 210412 data bytes) |
-| `0x136000–0x1BFFFF` | Reserved/free |
-| `0x1C0000–0x1FFFFF` | RWFS web UI; firmware write guard makes this unreachable to OTA |
+| `0x136000–0x1FFFFF` | Reserved/free; the web UI no longer occupies external flash |
 
 The browser calculates CRC32, begins a session, then POSTs sequential 16 KiB
 chunks to `/api/update`. Chunking is required because the WICED 3.3.1 HTTP
@@ -94,11 +90,14 @@ the staging header last, and only then records the image as ready to apply.
 - On the next boot after a verified upload, the bootloader copies the complete
   current 464 KB app region to the backup slot and verifies its CRC before
   erasing internal app flash.
+- The app region includes the packed RWFS web UI, so install and rollback always
+  keep firmware and portal assets on the same release.
 - The staged copy is idempotent. Power loss during the internal-flash copy
   leaves the journal at `BACKUP_READY`, so the next boot repeats the copy.
-- A new image is a trial until its HTTP server has been running for 15 seconds.
-  A six-minute system monitor covers slow STA-fallback boots. Three unconfirmed
-  trial boots cause the bootloader to restore and CRC-verify the backup.
+- A new image is a trial until its embedded RWFS passes every integrity check
+  and its HTTP server has been running for 15 seconds. A six-minute system
+  monitor covers slow STA-fallback boots. Three unconfirmed trial boots cause
+  the bootloader to restore and CRC-verify the backup.
 - Image authenticity is not checked. This is CRC/size/vector safety on a trusted
   local network, not signed firmware.
 
@@ -121,7 +120,7 @@ the staging header last, and only then records the image as ready to apply.
 
 Run these on the disposable bench unit before treating OTA as field-ready:
 
-1. Bootstrap the OTA bootloader/app and portal over SWD, preserving DCT.
+1. Bootstrap the OTA bootloader and combined app/portal over SWD, preserving DCT.
 2. Upload a byte-identical `.bin`; confirm reboot, the same firmware version,
    portal availability, and `scripts/api_smoke.zsh` success.
 3. Bump `REWAIR_FW_VERSION`, rebuild, upload from the portal, and confirm the

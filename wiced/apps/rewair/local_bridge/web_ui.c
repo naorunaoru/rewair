@@ -3,46 +3,50 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "resources.h"
 #include "web_api.h"
-#include "rewair_sflash.h"
 #include "rewair_uifs.h"
 
-/* Start of the 256 KB UI region (0x1C0000-0x1FFFFF) reserved on the 2 MiB
- * external SPI flash -- see Global Constraints / scripts/flash_webui.zsh. */
-#define REWAIR_UI_IMAGE_BASE 0x1C0000u
-
-/* Streaming chunk size for blob reads (brief: <=1 KB). Each chunk is one
- * rewair_uifs_read() call, which bottoms out in one rewair_sflash_read_bytes()
- * call -- so the sflash mutex is only ever held for a single ~1 KB SPI
- * transfer, never across the whole response. */
+/* Streaming chunk size for stored (gzipped) blob reads. The RWFS resource is
+ * memory-mapped inside the F411 application image, so each read is a bounded
+ * memcpy from internal flash and never allocates the whole asset in RAM. */
 #define WEB_UI_CHUNK_SIZE 1024u
+#define WEB_UI_TX_PACE_MS 10u
+#define REWAIR_WEBUI_RESOURCE resources___DIR_apps_DIR_rewair_DIR_local_bridge_DIR_webui_bin
 
 static rewair_uifs_t ui_fs;
 static uint32_t      ui_fs_valid = 0u;
 
-static int ui_sflash_read_cb( uint32_t addr, void* buf, uint32_t len, void* ctx )
+static int ui_internal_read_cb( uint32_t addr, void* buf, uint32_t len, void* ctx )
 {
+    const resource_hnd_t* image = &REWAIR_WEBUI_RESOURCE;
+
     (void)ctx;
-    if ( rewair_sflash_bounds_ok( REWAIR_UI_IMAGE_BASE + addr, len ) == 0 )
+    if ( buf == NULL || image->location != RESOURCE_IN_MEMORY || addr > image->size ||
+         len > image->size - addr )
     {
         return -1;
     }
-    return rewair_sflash_read_bytes( REWAIR_UI_IMAGE_BASE + addr, (uint8_t*)buf, len );
+    memcpy( buf, image->val.mem.data + addr, len );
+    return 0;
 }
 
 void web_ui_init( void )
 {
-    if ( rewair_sflash_ensure_init( ) != 0 )
+    const resource_hnd_t* image = &REWAIR_WEBUI_RESOURCE;
+
+    if ( image->location != RESOURCE_IN_MEMORY || image->size == 0u )
     {
-        printf( "[webui] sflash init failed; no valid image\n" );
+        printf( "[webui] embedded resource missing\n" );
         ui_fs_valid = 0u;
         return;
     }
 
-    if ( rewair_uifs_init( &ui_fs, ui_sflash_read_cb, NULL ) != 0 )
+    if ( rewair_uifs_init( &ui_fs, ui_internal_read_cb, NULL ) != 0 ||
+         ui_fs.total_size != image->size )
     {
         ui_fs_valid = 0u;
-        printf( "[webui] no valid image\n" );
+        printf( "[webui] embedded image invalid\n" );
         return;
     }
 
@@ -67,7 +71,13 @@ void web_ui_init( void )
     }
 
     ui_fs_valid = 1u;
-    printf( "[webui] image ok, %lu files verified\n", (unsigned long)ui_fs.file_count );
+    printf( "[webui] embedded image ok, %lu bytes, %lu files verified\n",
+            (unsigned long)ui_fs.total_size, (unsigned long)ui_fs.file_count );
+}
+
+uint32_t web_ui_is_valid( void )
+{
+    return ui_fs_valid;
 }
 
 /* Writes a raw response header (status line + headers, no body) for a UI
@@ -95,8 +105,7 @@ static int web_ui_write_header( wiced_http_response_stream_t* stream, const char
     {
         return -1;
     }
-    wiced_http_response_stream_write( stream, header, (uint32_t)n );
-    return 0;
+    return ( wiced_http_response_stream_write( stream, header, (uint32_t)n ) == WICED_SUCCESS ) ? 0 : -1;
 }
 
 /* Streams f's stored (gzipped) bytes to the client in WEB_UI_CHUNK_SIZE
@@ -116,8 +125,22 @@ static int web_ui_stream_file( const rewair_uifs_file_t* f, wiced_http_response_
         {
             return -1;
         }
-        wiced_http_response_stream_write( stream, chunk, take );
+        /* LwIP's WICED send wrapper is non-blocking and has only a small TCP
+         * send window. External-flash reads used to pace this loop naturally;
+         * internal-flash memcpy can otherwise outrun the window and make
+         * wiced_http_response_stream_write() drop a gzip chunk with ERR_MEM.
+         * Flush each bounded chunk, check both results, and give the TCP/IP
+         * thread time to acknowledge/free queued segments before continuing. */
+        if ( wiced_http_response_stream_write( stream, chunk, take ) != WICED_SUCCESS ||
+             wiced_http_response_stream_flush( stream ) != WICED_SUCCESS )
+        {
+            return -1;
+        }
         off += take;
+        if ( off < f->size )
+        {
+            wiced_rtos_delay_milliseconds( WEB_UI_TX_PACE_MS );
+        }
     }
     return 0;
 }
@@ -166,16 +189,14 @@ static void web_ui_send_302_portal( wiced_http_response_stream_t* stream )
     rewair_web_api_disconnect_stream( stream );
 }
 
-/* Built-in ~300-byte fallback page served for "/" when no valid UI image is
- * present in sflash (e.g. a fresh board before scripts/flash_webui.zsh has
- * ever run). Deliberately NOT gzipped -- Content-Encoding is omitted. */
+/* Built-in fallback for a corrupt firmware resource. Deliberately not gzipped;
+ * a valid release image should never reach this path. */
 static const char web_ui_fallback_html[] =
     "<!doctype html><html><head><meta charset=\"utf-8\">"
     "<title>Rewair</title></head><body>"
-    "<h1>UI image missing</h1>"
-    "<p>No valid web UI image was found in external flash.</p>"
-    "<p>Run <code>scripts/flash_webui.zsh</code> from the repo to flash it, "
-    "then reload this page.</p>"
+    "<h1>UI image invalid</h1>"
+    "<p>The firmware's embedded web UI failed its integrity check.</p>"
+    "<p>Reinstall a known-good Rewair firmware image.</p>"
     "</body></html>";
 
 static void web_ui_send_fallback_root( wiced_http_response_stream_t* stream )

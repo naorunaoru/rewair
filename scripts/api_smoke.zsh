@@ -37,7 +37,7 @@ check "status rejects POST (405)"   sh -c "[ \"\$(curl -s -o /dev/null -w '%{htt
 
 check "sse first event < 3s"        sh -c "curl -sN --max-time 3 '$BASE/api/events' | head -1 | grep -q '^data: {'"
 
-# Web UI (Phase 2 Task 5): served from the RWFS image in external sflash.
+# Web UI: served from the RWFS image linked into internal F411 flash.
 check "GET / is 200"                sh -c "[ \"\$(curl -s -o /dev/null -w '%{http_code}' '$BASE/')\" = 200 ]"
 # -I sends a HEAD request; the UI routes only serve GET (HEAD 404s), so
 # capture headers off a real GET instead (-D - dumps headers, -o discards
