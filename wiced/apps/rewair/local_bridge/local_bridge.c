@@ -81,7 +81,7 @@ static const wiced_uart_config_t sensor_uart_config =
     .data_width   = DATA_WIDTH_8BIT,
     .parity       = NO_PARITY,
     .stop_bits    = STOP_BITS_1,
-    .flow_control = FLOW_CONTROL_DISABLED,
+    .flow_control = FLOW_CONTROL_CTS_RTS,
 };
 
 static uint32_t auto_score_enabled = 1u;
@@ -1037,8 +1037,19 @@ void sensor_reset_cycle( void )
 
 static void sensor_reset_release_early( void )
 {
+    /* The stock F103 enables USART2 RTS/CTS.  PA1 is the F411 USART2_RTS
+     * output wired to F103 PA0/USART2_CTS, so assert it active-low before
+     * releasing the sensor MCU.  wiced_uart_init later takes PA1 over as the
+     * USART2 alternate function and keeps hardware flow control active. */
+    RCC->AHB1ENR |= RCC_AHB1Periph_GPIOA;
     RCC->AHB1ENR |= RCC_AHB1Periph_GPIOB;
     (void)RCC->AHB1ENR;
+
+    GPIOA->ODR &= ~( 1u << 1 );
+    GPIOA->MODER = ( GPIOA->MODER & ~( 3u << 2 ) ) | ( 1u << 2 );
+    GPIOA->OTYPER &= ~( 1u << 1 );
+    GPIOA->OSPEEDR = ( GPIOA->OSPEEDR & ~( 3u << 2 ) ) | ( 2u << 2 );
+    GPIOA->PUPDR &= ~( 3u << 2 );
 
     GPIOB->ODR |= ( 1u << 12 );
     GPIOB->MODER = ( GPIOB->MODER & ~( 3u << 24 ) ) | ( 1u << 24 );
@@ -1127,7 +1138,7 @@ void application_start( void )
 
     printf( "\nRewair WICED local bridge\n" );
     printf( "ble:     USART1 PB6 TX / PA10 RX, 115200 8N1\n" );
-    printf( "sensor:  USART2 PA2 TX / PA3 RX, 115200 8N1\n" );
+    printf( "sensor:  USART2 PA2 TX / PA3 RX / PA0 CTS / PA1 RTS, 115200 8N1\n" );
 
     if ( sensor_uart_start( ) != WICED_SUCCESS )
     {
