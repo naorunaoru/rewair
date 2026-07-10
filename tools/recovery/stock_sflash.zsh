@@ -7,14 +7,15 @@ OPENOCD="${OPENOCD:-}"
 SPEED="${SPEED:-950}"
 STUB_IMAGE="${STUB_IMAGE:-}"
 
-if [[ $# -ne 2 || ( "$1" != read && "$1" != write ) ]]; then
+if [[ $# -lt 2 || $# -gt 3 || ( "$1" != read && "$1" != write ) || ( "$1" == read && $# -ne 2 ) ]]; then
   print -u2 -r -- "usage: $0 read <output.bin>"
-  print -u2 -r -- "       $0 write <input.bin>"
+  print -u2 -r -- "       $0 write <input.bin> [offset]"
   exit 2
 fi
 
 action="$1"
 image="$2"
+offset="${3:-0}"
 
 if [[ -z "$OPENOCD" ]]; then
   if command -v openocd > /dev/null 2>&1; then
@@ -61,12 +62,21 @@ fi
 
 if [[ "$action" == write ]]; then
   size="$(wc -c < "$image" | tr -d ' ')"
-  if [[ "$size" != 2097152 ]]; then
+  if [[ $# -eq 2 && "$size" != 2097152 ]]; then
     print -u2 -r -- "unexpected SPI-flash backup size: $size bytes (expected 2097152)"
     exit 1
   fi
-  command="sflash_write_file {$image} 0"
-  print -r -- "Restoring 2 MiB external SPI flash from $image"
+  if ! [[ "$offset" =~ '^(0x[0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)$' ]]; then
+    print -u2 -r -- "invalid SPI-flash offset: $offset"
+    exit 2
+  fi
+  offset_value=$(( offset ))
+  if (( offset_value < 0 || offset_value >= 0x200000 || size > 0x200000 - offset_value )); then
+    print -u2 -r -- "image does not fit in external SPI flash at $offset"
+    exit 1
+  fi
+  command="sflash_write_file {$image} $offset"
+  print -r -- "Writing $size bytes to external SPI flash at $offset from $image"
 else
   mkdir -p -- "${image:h}"
   temp="${image}.incomplete.$$"

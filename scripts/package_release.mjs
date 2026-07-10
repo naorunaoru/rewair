@@ -162,21 +162,25 @@ for (const filename of [...new Set(checksumFiles)].sort()) {
 }
 await writeFile(path.join(outputDir, 'SHA256SUMS.txt'), `${checksums.join('\n')}\n`);
 
-const readme = `Rewair ${version} firmware bundle
+const readme = `Rewair ${version} firmware files
 
 Target: EMW3165 / STM32F411CE / BCM43362A2 / MX25L1606E
 
-Normal installation (preserves saved DCT data):
-  internal flash  0x08000000  rewair-bootloader.bin
-  internal flash  0x0800c000  rewair-application.bin
-  external flash  0x00101000  rewair-sflash.bin
+Before installing, follow Step 0 in the Rewair Getting Started guide to back up
+both F411 internal flash and the complete external SPI flash.
+
+From a Rewair source checkout, place the downloaded assets in one directory and run:
+
+  BACKUP_DIR=/path/to/stock-backup scripts/install_release.zsh /path/to/release-files
+
+The installer verifies SHA256SUMS.txt, writes the external-flash image, then flashes
+the bootloader and application while preserving DCT.
 
 rewair-default-dct.bin is intentionally excluded from the normal install. Writing it
 at 0x08004000 resets persistent configuration and installs the build-generated MAC
 address. Use it only for explicit factory recovery, never across a fleet unchanged.
 
-manifest.json is the authoritative machine-readable description for the GitHub Pages
-browser flasher. SHA256SUMS.txt covers every published binary and the manifest.
+SHA256SUMS.txt covers every published binary and the manifest.
 `;
 await writeFile(path.join(outputDir, 'FLASHING.txt'), readme);
 

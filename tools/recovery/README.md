@@ -8,8 +8,8 @@ experimental flashing.
 Do this **before flashing anything**. Stock firmware is not distributed with
 Rewair. Without a dump from your own device, you cannot restore it to stock.
 
-Download and extract a Rewair release bundle, then connect the CMSIS-DAP probe.
-Use the included SPI-flash loader to capture both memories:
+Download `rewair-sflash-loader.bin` from a Rewair release, then connect the
+CMSIS-DAP probe. Use that loader to capture both memories:
 
 ```sh
 STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
