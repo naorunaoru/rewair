@@ -110,9 +110,11 @@ function derivePosixTZ() {
   };
 }
 
-let es = null;
-let pollTimer = null;
-let esFailures = 0;
+let activeStatusUnsubscribe = null;
+
+function stopStatusSubscription() {
+  if (activeStatusUnsubscribe) activeStatusUnsubscribe();
+}
 
 function otaPost(path, body, onUpload) {
   return new Promise((resolve, reject) => {
@@ -193,8 +195,7 @@ const RewairAPI = {
   httpAvailable: () => initialHttp.enabled,
   transportKind: () => activeTransport ? activeTransport.kind : 'none',
   async connectBluetooth() {
-    if (es) { es.close(); es = null; }
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    stopStatusSubscription();
     if (!bleTransport) bleTransport = new RewairBleTransport();
     const capabilities = await bleTransport.connect();
     activeTransport = bleTransport;
@@ -210,36 +211,50 @@ const RewairAPI = {
   subscribe(onStatus) {
     if (!activeTransport) return () => {};
 
+    stopStatusSubscription();
+    let stopped = false;
+    let eventSource = null;
+    let pollTimer = null;
+    let eventFailures = 0;
+    const poll = () => RewairAPI.status().then(onStatus).catch(() => {});
     const startPolling = () => {
-      if (pollTimer) return;
+      if (stopped || pollTimer) return;
       const interval = activeTransport.kind === 'ble' ? 5000 : 2500;
-      pollTimer = setInterval(() => this.status().then(onStatus).catch(() => {}), interval);
+      poll();
+      pollTimer = setInterval(poll, interval);
     };
     const stopPolling = () => { clearInterval(pollTimer); pollTimer = null; };
 
-    /* Defensive: a second subscribe() call would otherwise overwrite `es`
-     * and leak the prior EventSource (it keeps its connection open and
-     * retrying forever). Auto-unsubscribe any live session first. */
-    if (es) { es.close(); es = null; stopPolling(); }
+    const unsubscribe = () => {
+      if (stopped) return;
+      stopped = true;
+      if (eventSource) eventSource.close();
+      eventSource = null;
+      stopPolling();
+      if (activeStatusUnsubscribe === unsubscribe) activeStatusUnsubscribe = null;
+    };
+    activeStatusUnsubscribe = unsubscribe;
 
     if (activeTransport.kind === 'ble') {
       startPolling();
-      this.status().then(onStatus).catch(() => {});
-      return () => stopPolling();
+      return unsubscribe;
     }
 
-    es = new EventSource(BASE + '/api/events');
-    es.onmessage = (ev) => {
-      esFailures = 0;
+    eventSource = new EventSource(BASE + '/api/events');
+    eventSource.onmessage = (ev) => {
+      eventFailures = 0;
       stopPolling();
       try { onStatus(JSON.parse(ev.data)); } catch (e) { /* skip bad frame */ }
     };
-    es.onerror = () => {
-      esFailures += 1;
-      if (esFailures >= 3) startPolling();   /* EventSource keeps retrying too */
+    eventSource.onerror = () => {
+      eventFailures += 1;
+      if (eventFailures >= 3) {
+        eventSource.close();
+        eventSource = null;
+        startPolling();
+      }
     };
-    this.status().then(onStatus).catch(() => {});
-    return () => { if (es) es.close(); es = null; stopPolling(); };
+    return unsubscribe;
   },
 };
 

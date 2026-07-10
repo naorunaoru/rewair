@@ -284,10 +284,8 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
 
     useEffect(() => {
       let alive = true;
-      const load = () => RewairAPI.mqtt().then((value) => alive && setMqtt(value), () => {});
-      load();
-      const timer = setInterval(load, 5000);
-      return () => { alive = false; clearInterval(timer); };
+      RewairAPI.mqtt().then((value) => alive && setMqtt(value), () => {});
+      return () => { alive = false; };
     }, []);
 
     const tzSub = st.tz_offset == null ? 'Not set'
