@@ -57,7 +57,7 @@
 /* GPIO pin table. Used by WICED/platform/MCU/wiced_platform_common.c */
 const platform_gpio_t platform_gpio_pins[] =
 {
-//    [WICED_GPIO_1]  = { GPIOA,  0 },
+    [WICED_GPIO_1]  = { GPIOA,  0 },
     [WICED_GPIO_2]  = { GPIOA,  1 },
     [WICED_GPIO_3]  = { GPIOA,  2 },
     [WICED_GPIO_4]  = { GPIOA,  3 },
@@ -174,8 +174,8 @@ const platform_uart_t platform_uart_peripherals[] =
         .port               = USART2,
         .tx_pin             = &platform_gpio_pins[WICED_GPIO_3],
         .rx_pin             = &platform_gpio_pins[WICED_GPIO_4],
-        .cts_pin            = NULL,
-        .rts_pin            = NULL,
+        .cts_pin            = &platform_gpio_pins[WICED_GPIO_1],
+        .rts_pin            = &platform_gpio_pins[WICED_GPIO_2],
         .tx_dma_config =
         {
             .controller     = DMA1,
