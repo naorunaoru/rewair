@@ -157,6 +157,11 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
     const [saving, setSaving] = useState(false);
     const [err, setErr] = useState(null);
     const patch = (key, value) => setCfg((old) => Object.assign({}, old, { [key]: value }));
+    const connectedText = cfg.discovery
+      ? cfg.controls === 3
+        ? `Connected to ${cfg.host}:${cfg.port} · Home Assistant controls ready`
+        : `Connected to ${cfg.host}:${cfg.port} · ${cfg.last_error || 'Home Assistant controls unavailable'}`
+      : `Connected to ${cfg.host}:${cfg.port} · Sensor publishing`;
 
     const save = () => {
       const host = cfg.host.trim();
@@ -192,14 +197,14 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
           <div class="modal-body">
             <div class="mqtt-status ${cfg.connected ? 'online' : ''}">
               <span class="dot"></span>
-              <span>${cfg.connected ? `Connected to ${cfg.host}:${cfg.port}`
+              <span>${cfg.connected ? connectedText
                 : cfg.enabled ? (cfg.last_error || 'Waiting to connect') : 'MQTT is off'}</span>
             </div>
 
             <label class="mqtt-check">
               <input type="checkbox" checked=${cfg.enabled}
                 onChange=${(e) => patch('enabled', e.target.checked)} />
-              <span><strong>Enable MQTT</strong><small>Publish this monitor's readings to a local broker.</small></span>
+              <span><strong>Enable MQTT</strong><small>Publish readings to a local broker and connect with Home Assistant.</small></span>
             </label>
 
             <div class="mqtt-grid">
@@ -227,7 +232,7 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
               <label class="mqtt-check compact">
                 <input type="checkbox" checked=${cfg.discovery}
                   onChange=${(e) => patch('discovery', e.target.checked)} />
-                <span><strong>Home Assistant discovery</strong><small>Creates all seven sensor entities automatically.</small></span>
+                <span><strong>Home Assistant discovery</strong><small>Creates seven sensors and three device controls automatically.</small></span>
               </label>
               ${cfg.discovery && html`<label class="mqtt-field"><span>Discovery prefix</span>
                 <input class="field" autocomplete="off" value=${cfg.discovery_prefix}
@@ -340,7 +345,10 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
           editor=${direct ? null : (close) => html`<${TzEditor} st=${st} onPatch=${onPatch} close=${close} />`} />
 
         <${Row} id="mqtt" name="MQTT & Home Assistant"
-          sub=${mqtt ? (mqtt.connected ? `Connected to ${mqtt.host}:${mqtt.port}`
+          sub=${mqtt ? (mqtt.connected
+            ? mqtt.discovery && mqtt.controls !== 3
+              ? `Connected · ${mqtt.last_error || 'Home Assistant controls unavailable'}`
+              : mqtt.discovery ? `Connected · Home Assistant controls ready` : 'Connected · Sensor publishing'
             : mqtt.enabled ? (mqtt.last_error || 'Enabled · connecting') : 'Off') : 'Loading…'}
           open=${open} setOpen=${setOpen}
           ctrl=${html`${mqtt && mqtt.connected && html`<span class="badge on">Connected</span>`}

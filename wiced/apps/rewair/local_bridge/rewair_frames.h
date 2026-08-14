@@ -1,16 +1,7 @@
 #pragma once
 
-/* F103 sensor-frame TX (frame building + senders), lifted verbatim out of
- * local_bridge.c (Phase 2 Task 8, pure move). Firmware-side only (wiced
- * types throughout), not host-testable.
- *
- * Cross-boundary statics: several file-globals below are shared with
- * local_bridge.c (sensor-thread / reset / console clusters, which stay
- * there). Per the pure-move rule, each was left in its PRIMARY-writer
- * module and extern-declared here for the other side -- no accessor
- * functions were introduced. See the Task 8 report for the placement
- * rationale for each variable.
- */
+/* F103 sensor-frame TX (frame building + senders), lifted out of
+ * local_bridge.c. Firmware-side only (WICED types throughout). */
 
 #include <stdint.h>
 #include "wiced.h"
@@ -38,13 +29,6 @@ extern volatile uint32_t sensor_uart_tx_sr_after;
 extern volatile uint32_t sensor_boot_context_sent;
 extern volatile uint32_t sensor_netw_boot_pulses;
 
-/* ---- Timezone rule (primary writer: sensor_set_tz_rule, this module).
- * Read directly by local_bridge.c's application_start DST-recheck loop
- * (stays), which is why both statics are extern-exposed rather than kept
- * file-local. */
-extern rewair_tz_rule_t current_tz_rule;
-extern uint32_t current_tz_rule_valid;
-
 /* ---- Frame building ---- */
 uint32_t fields_payload_len( char** fields, uint32_t count );
 void frame_append( uint8_t* frame, uint32_t* frame_len, const void* data, uint32_t length );
@@ -52,10 +36,12 @@ wiced_result_t sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t fram
 wiced_result_t sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count );
 
 /* ---- Senders ---- */
+/* Initializes the lock protecting the active timezone rule and serialized
+ * TINF/TIME context transactions. Must precede rewair_settings_init(). */
+wiced_result_t rewair_time_context_init( void );
 void sensor_set_tz_rule( const rewair_tz_rule_t* rule );
 void send_netw_up( void );
-void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year );
-void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds );
+void send_tinf_context( uint32_t year );
 void send_time_context( uint32_t utc_seconds );
 void send_disp_clock_canary( void );
 wiced_result_t sensor_send_disp_mode( const char* mode );

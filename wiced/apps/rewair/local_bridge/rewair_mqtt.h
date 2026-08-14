@@ -26,6 +26,9 @@ typedef struct
     uint8_t  connected;
     uint32_t published;
     uint32_t reconnects;
+    uint32_t controls;
+    uint32_t commands;
+    uint32_t command_errors;
     char     last_error[64];
 } rewair_mqtt_status_t;
 

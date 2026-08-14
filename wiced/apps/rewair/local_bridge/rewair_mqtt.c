@@ -9,6 +9,7 @@
 #include "wiced_wifi.h"
 #include "rewair_json.h"
 #include "rewair_mqtt_packet.h"
+#include "rewair_settings.h"
 #include "rewair_state.h"
 #include "rewair_version.h"
 
@@ -16,13 +17,18 @@
 #define REWAIR_MQTT_DCT_OFFSET         512u
 #define REWAIR_MQTT_THREAD_STACK_SIZE  6144u
 #define REWAIR_MQTT_PACKET_MAX         1200u
-#define REWAIR_MQTT_PAYLOAD_MAX        900u
+#define REWAIR_MQTT_PAYLOAD_MAX        1024u
 #define REWAIR_MQTT_TOPIC_MAX          192u
+#define REWAIR_MQTT_ESCAPED_NAME_MAX   193u
 #define REWAIR_MQTT_CONNECT_TIMEOUT_MS 5000u
 #define REWAIR_MQTT_RX_TIMEOUT_MS      5000u
 #define REWAIR_MQTT_RETRY_MS           15000u
 #define REWAIR_MQTT_HEARTBEAT_MS       30000u
 #define REWAIR_MQTT_KEEP_ALIVE_S       45u
+#define REWAIR_MQTT_RX_FRAME_MAX       512u
+#define REWAIR_MQTT_RX_DRAIN_MAX       4u
+#define REWAIR_MQTT_SUBACK_PACKETS_MAX 8u
+#define REWAIR_MQTT_CONTROL_RATE_MS     1000u
 
 typedef struct
 {
@@ -32,6 +38,32 @@ typedef struct
     const char* device_class;
     const char* unit;
 } mqtt_sensor_definition_t;
+
+typedef struct
+{
+    const char* object_id;
+    const char* name;
+    const char* options_json;
+} mqtt_control_definition_t;
+
+enum
+{
+    MQTT_CONTROL_DISPLAY_MODE = 0u,
+    MQTT_CONTROL_BRIGHTNESS   = 1u,
+    MQTT_CONTROL_UNITS        = 2u,
+    MQTT_CONTROL_COUNT        = 3u,
+    MQTT_CONTROL_ALL          = ( 1u << MQTT_CONTROL_COUNT ) - 1u
+};
+
+typedef struct
+{
+    uint16_t expected_suback_id;
+    int      suback_result;
+    uint8_t  suback_seen;
+    uint8_t  publish_failed;
+    uint8_t  controls_allowed;
+    uint32_t now_ms;
+} mqtt_receive_context_t;
 
 static const mqtt_sensor_definition_t mqtt_sensors[] =
 {
@@ -44,13 +76,20 @@ static const mqtt_sensor_definition_t mqtt_sensors[] =
     { "score",       "Air quality score", "score",       "",                                  "" },
 };
 
+static const mqtt_control_definition_t mqtt_controls[] =
+{
+    { "display_mode",       "Display mode",                    "\"Score\",\"Clock\",\"Sensors\"" },
+    { "display_brightness", "Display brightness",              "\"Bright\",\"Auto\",\"Sleep\"" },
+    { "temperature_unit",   "Device display temperature unit", "\"Celsius\",\"Fahrenheit\"" },
+};
+
 static wiced_thread_t mqtt_thread;
 static wiced_mutex_t  mqtt_status_mutex;
 static wiced_tcp_socket_t mqtt_socket;
 static uint8_t socket_created = 0u;
 static uint8_t mqtt_connected = 0u;
 static volatile uint32_t mqtt_config_generation = 1u;
-static volatile uint32_t mqtt_state_dirty = 1u;
+static volatile uint32_t mqtt_state_generation = 1u;
 static rewair_mqtt_config_t active_config;
 static rewair_mqtt_status_t mqtt_status;
 static uint8_t mqtt_packet[REWAIR_MQTT_PACKET_MAX];
@@ -61,6 +100,15 @@ static char mqtt_availability_topic[REWAIR_MQTT_TOPIC_MAX];
 static char mqtt_device_id[32];
 static char mqtt_client_id[24];
 static char mqtt_last_discovery_name[32];
+static uint8_t mqtt_rx_frame[REWAIR_MQTT_RX_FRAME_MAX];
+static rewair_mqtt_decoder_t mqtt_decoder;
+static uint8_t mqtt_controls_ready = 0u;
+static uint8_t mqtt_control_state_valid = 0u;
+static uint8_t mqtt_control_state[MQTT_CONTROL_COUNT];
+static uint8_t mqtt_control_change_seen[MQTT_CONTROL_COUNT];
+static uint32_t mqtt_control_last_change_ms[MQTT_CONTROL_COUNT];
+static uint16_t mqtt_next_packet_id = 1u;
+static uint32_t mqtt_initial_state_generation = 0u;
 
 static void copy_str( char* out, uint32_t out_size, const char* value )
 {
@@ -100,6 +148,31 @@ static void mqtt_note_publish( void )
 {
     wiced_rtos_lock_mutex( &mqtt_status_mutex );
     mqtt_status.published++;
+    wiced_rtos_unlock_mutex( &mqtt_status_mutex );
+}
+
+static void mqtt_set_control_count( uint32_t count )
+{
+    wiced_rtos_lock_mutex( &mqtt_status_mutex );
+    mqtt_status.controls = count;
+    wiced_rtos_unlock_mutex( &mqtt_status_mutex );
+}
+
+static void mqtt_note_command( uint8_t error )
+{
+    wiced_rtos_lock_mutex( &mqtt_status_mutex );
+    mqtt_status.commands++;
+    if ( error != 0u )
+    {
+        mqtt_status.command_errors++;
+    }
+    wiced_rtos_unlock_mutex( &mqtt_status_mutex );
+}
+
+static void mqtt_note_command_error( void )
+{
+    wiced_rtos_lock_mutex( &mqtt_status_mutex );
+    mqtt_status.command_errors++;
     wiced_rtos_unlock_mutex( &mqtt_status_mutex );
 }
 
@@ -206,7 +279,7 @@ void rewair_mqtt_get_status( rewair_mqtt_status_t* status )
 
 static void mqtt_state_changed( void )
 {
-    mqtt_state_dirty = 1u;
+    mqtt_state_generation++;
 }
 
 static int mqtt_send_bytes( const uint8_t* data, uint32_t length )
@@ -292,10 +365,7 @@ static int mqtt_receive_connack( void )
     while ( received < sizeof( response ) )
     {
         wiced_packet_t* packet = NULL;
-        uint8_t* data = NULL;
-        uint16_t data_length = 0u;
-        uint16_t available = 0u;
-        uint32_t copy_length;
+        uint16_t offset = 0u;
 
         if ( wiced_tcp_receive( &mqtt_socket, &packet, REWAIR_MQTT_RX_TIMEOUT_MS ) != WICED_SUCCESS ||
              packet == NULL )
@@ -303,23 +373,37 @@ static int mqtt_receive_connack( void )
             mqtt_set_error( "MQTT CONNACK timeout" );
             return -1;
         }
-        if ( wiced_packet_get_data( packet, 0, &data, &data_length, &available ) != WICED_SUCCESS )
+
+        while ( 1 )
         {
-            wiced_packet_delete( packet );
-            mqtt_set_error( "invalid MQTT CONNACK" );
-            return -1;
+            uint8_t* data = NULL;
+            uint16_t fragment_length = 0u;
+            uint16_t available_length = 0u;
+
+            if ( wiced_packet_get_data( packet, offset, &data, &fragment_length,
+                                        &available_length ) != WICED_SUCCESS ||
+                 data == NULL || fragment_length == 0u ||
+                 available_length > sizeof( response ) - received )
+            {
+                wiced_packet_delete( packet );
+                mqtt_set_error( "invalid MQTT CONNACK" );
+                return -1;
+            }
+            memcpy( response + received, data, fragment_length );
+            received += fragment_length;
+            if ( available_length <= fragment_length )
+            {
+                break;
+            }
+            offset = (uint16_t)( offset + fragment_length );
         }
-        copy_length = data_length;
-        if ( copy_length > sizeof( response ) - received )
-        {
-            copy_length = sizeof( response ) - received;
-        }
-        memcpy( response + received, data, copy_length );
-        received += copy_length;
         wiced_packet_delete( packet );
     }
 
-    if ( response[0] != 0x20u || response[1] != 0x02u || response[3] != 0x00u )
+    /* CONNECT always requests a clean session, so Session Present must be 0.
+     * Reserved CONNACK flag bits and unknown return codes are protocol errors. */
+    if ( response[0] != 0x20u || response[1] != 0x02u || response[2] != 0x00u ||
+         response[3] > 5u || response[3] != 0x00u )
     {
         switch ( response[3] )
         {
@@ -342,13 +426,180 @@ static void mqtt_close_socket( void )
         socket_created = 0u;
     }
     mqtt_connected = 0u;
+    mqtt_controls_ready = 0u;
+    mqtt_control_state_valid = 0u;
+    mqtt_set_control_count( 0u );
     mqtt_set_connected( 0u );
+}
+
+static int mqtt_control_topic( uint32_t control, const char* suffix,
+                               char* out, uint32_t out_size )
+{
+    int length;
+
+    if ( control >= MQTT_CONTROL_COUNT || suffix == NULL || out == NULL || out_size == 0u )
+    {
+        return -1;
+    }
+    length = snprintf( out, out_size, "%s/settings/%s/%s", mqtt_base_topic,
+                       mqtt_controls[control].object_id, suffix );
+    return length >= 0 && (uint32_t)length < out_size ? 0 : -1;
+}
+
+static uint8_t mqtt_control_value( uint32_t control,
+                                   const rewair_settings_t* settings )
+{
+    switch ( control )
+    {
+        case MQTT_CONTROL_DISPLAY_MODE: return settings->disp_mode;
+        case MQTT_CONTROL_BRIGHTNESS:   return settings->sleep_mode;
+        default:                        return settings->units;
+    }
+}
+
+static const char* mqtt_control_state_text( uint32_t control, uint8_t value )
+{
+    switch ( control )
+    {
+        case MQTT_CONTROL_DISPLAY_MODE:
+            switch ( value )
+            {
+                case REWAIR_DISP_SCORE:   return "Score";
+                case REWAIR_DISP_CLOCK:   return "Clock";
+                case REWAIR_DISP_SENSORS: return "Sensors";
+                default:                  return "None";
+            }
+        case MQTT_CONTROL_BRIGHTNESS:
+            switch ( value )
+            {
+                case REWAIR_SLEEP_ON:    return "Bright";
+                case REWAIR_SLEEP_DIM:   return "Auto";
+                case REWAIR_SLEEP_SLEEP: return "Sleep";
+                default:                 return "None";
+            }
+        default:
+            switch ( value )
+            {
+                case REWAIR_UNITS_C: return "Celsius";
+                case REWAIR_UNITS_F: return "Fahrenheit";
+                default:             return "None";
+            }
+    }
+}
+
+/* force_mask echoes selected entities even when their values are unchanged.
+ * A zero mask publishes only settings which changed since the last state. */
+static int mqtt_control_states_publish( uint8_t force_mask )
+{
+    rewair_settings_t settings;
+    uint32_t i;
+
+    if ( rewair_settings_get( &settings ) != REWAIR_SETTINGS_OK )
+    {
+        return -1;
+    }
+    for ( i = 0u; i < MQTT_CONTROL_COUNT; i++ )
+    {
+        uint8_t bit = (uint8_t)( 1u << i );
+        uint8_t value = mqtt_control_value( i, &settings );
+        char topic[REWAIR_MQTT_TOPIC_MAX];
+
+        if ( ( force_mask & bit ) == 0u &&
+             ( mqtt_control_state_valid & bit ) != 0u &&
+             mqtt_control_state[i] == value )
+        {
+            continue;
+        }
+        if ( mqtt_control_topic( i, "state", topic, sizeof( topic ) ) != 0 ||
+             mqtt_publish( topic, mqtt_control_state_text( i, value ), 1u ) != 0 )
+        {
+            return -1;
+        }
+        mqtt_control_state[i] = value;
+        mqtt_control_state_valid |= bit;
+    }
+    return 0;
+}
+
+static int mqtt_control_discovery_publish( uint8_t clear )
+{
+    rewair_status_t state;
+    char escaped_name[REWAIR_MQTT_ESCAPED_NAME_MAX];
+    char escaped_availability_topic[REWAIR_MQTT_TOPIC_MAX * 2u];
+    uint32_t i;
+
+    rewair_state_snapshot( &state );
+    (void)rewair_json_escape_string( state.name, escaped_name, sizeof( escaped_name ) );
+    (void)rewair_json_escape_string( mqtt_availability_topic,
+                                     escaped_availability_topic,
+                                     sizeof( escaped_availability_topic ) );
+
+    for ( i = 0u; i < MQTT_CONTROL_COUNT; i++ )
+    {
+        const mqtt_control_definition_t* control = &mqtt_controls[i];
+        char discovery_topic[REWAIR_MQTT_TOPIC_MAX];
+        char command_topic[REWAIR_MQTT_TOPIC_MAX];
+        char state_topic[REWAIR_MQTT_TOPIC_MAX];
+        char escaped_command_topic[REWAIR_MQTT_TOPIC_MAX * 2u];
+        char escaped_state_topic[REWAIR_MQTT_TOPIC_MAX * 2u];
+        char unique_id[64];
+        int length;
+
+        snprintf( unique_id, sizeof( unique_id ), "%s_%s",
+                  mqtt_device_id, control->object_id );
+        length = snprintf( discovery_topic, sizeof( discovery_topic ),
+                           "%s/select/%s/config",
+                           active_config.discovery_prefix, unique_id );
+        if ( length < 0 || (uint32_t)length >= sizeof( discovery_topic ) )
+        {
+            return -1;
+        }
+        if ( clear != 0u )
+        {
+            if ( mqtt_publish( discovery_topic, "", 1u ) != 0 )
+            {
+                return -1;
+            }
+            continue;
+        }
+        if ( mqtt_control_topic( i, "set", command_topic,
+                                 sizeof( command_topic ) ) != 0 ||
+             mqtt_control_topic( i, "state", state_topic,
+                                 sizeof( state_topic ) ) != 0 )
+        {
+            return -1;
+        }
+        (void)rewair_json_escape_string( command_topic, escaped_command_topic,
+                                         sizeof( escaped_command_topic ) );
+        (void)rewair_json_escape_string( state_topic, escaped_state_topic,
+                                         sizeof( escaped_state_topic ) );
+        length = snprintf(
+            mqtt_payload, sizeof( mqtt_payload ),
+            "{\"name\":\"%s\",\"unique_id\":\"%s\","
+            "\"command_topic\":\"%s\",\"state_topic\":\"%s\","
+            "\"options\":[%s],\"qos\":0,\"retain\":false,"
+            "\"entity_category\":\"config\","
+            "\"availability_topic\":\"%s\","
+            "\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
+            "\"manufacturer\":\"Rewair\",\"model\":\"Awair Element\","
+            "\"sw_version\":\"%s\"},"
+            "\"origin\":{\"name\":\"Rewair\",\"sw_version\":\"%s\"}}",
+            control->name, unique_id, escaped_command_topic, escaped_state_topic,
+            control->options_json, escaped_availability_topic,
+            mqtt_device_id, escaped_name, REWAIR_FW_VERSION, REWAIR_FW_VERSION );
+        if ( length < 0 || (uint32_t)length >= sizeof( mqtt_payload ) ||
+             mqtt_publish( discovery_topic, mqtt_payload, 1u ) != 0 )
+        {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int mqtt_discovery_publish( uint8_t clear )
 {
     rewair_status_t state;
-    char escaped_name[64];
+    char escaped_name[REWAIR_MQTT_ESCAPED_NAME_MAX];
     char escaped_state_topic[REWAIR_MQTT_TOPIC_MAX * 2u];
     char escaped_availability_topic[REWAIR_MQTT_TOPIC_MAX * 2u];
     uint32_t i;
@@ -409,6 +660,12 @@ static int mqtt_discovery_publish( uint8_t clear )
         }
     }
 
+    if ( mqtt_control_discovery_publish(
+             clear != 0u || mqtt_controls_ready == 0u ? 1u : 0u ) != 0 )
+    {
+        return -1;
+    }
+
     if ( clear == 0u )
     {
         copy_str( mqtt_last_discovery_name, sizeof( mqtt_last_discovery_name ), state.name );
@@ -463,11 +720,440 @@ static int mqtt_state_publish( void )
     return mqtt_publish( mqtt_state_topic, mqtt_payload, 1u );
 }
 
+static int mqtt_bytes_equal( const uint8_t* bytes, uint32_t length,
+                             const char* text )
+{
+    uint32_t text_length = (uint32_t)strlen( text );
+
+    return length == text_length && memcmp( bytes, text, length ) == 0 ? 1 : 0;
+}
+
+/* Returns a control index, -2 for an unknown setting below the subscribed
+ * wildcard, or -1 for an unrelated publication. */
+static int mqtt_command_control( const rewair_mqtt_publish_event_t* publish )
+{
+    uint32_t i;
+    uint32_t base_length = (uint32_t)strlen( mqtt_base_topic );
+    static const char settings_part[] = "/settings/";
+    static const char set_part[] = "/set";
+    uint32_t settings_length = (uint32_t)sizeof( settings_part ) - 1u;
+    uint32_t set_length = (uint32_t)sizeof( set_part ) - 1u;
+
+    for ( i = 0u; i < MQTT_CONTROL_COUNT; i++ )
+    {
+        char topic[REWAIR_MQTT_TOPIC_MAX];
+
+        if ( mqtt_control_topic( i, "set", topic, sizeof( topic ) ) == 0 &&
+             mqtt_bytes_equal( publish->topic, publish->topic_length, topic ) != 0 )
+        {
+            return (int)i;
+        }
+    }
+
+    if ( publish->topic_length > base_length + settings_length + set_length &&
+         memcmp( publish->topic, mqtt_base_topic, base_length ) == 0 &&
+         memcmp( publish->topic + base_length, settings_part, settings_length ) == 0 &&
+         memcmp( publish->topic + publish->topic_length - set_length,
+                 set_part, set_length ) == 0 )
+    {
+        uint32_t start = base_length + settings_length;
+        uint32_t end = publish->topic_length - set_length;
+        uint32_t position;
+
+        for ( position = start; position < end; position++ )
+        {
+            if ( publish->topic[position] == '/' )
+            {
+                return -1;
+            }
+        }
+        return -2;
+    }
+    return -1;
+}
+
+static int mqtt_command_parse_value( uint32_t control, const uint8_t* payload,
+                                     uint32_t payload_length, uint8_t* value )
+{
+    if ( control == MQTT_CONTROL_DISPLAY_MODE )
+    {
+        if ( mqtt_bytes_equal( payload, payload_length, "Score" ) != 0 )
+        {
+            *value = REWAIR_DISP_SCORE;
+        }
+        else if ( mqtt_bytes_equal( payload, payload_length, "Clock" ) != 0 )
+        {
+            *value = REWAIR_DISP_CLOCK;
+        }
+        else if ( mqtt_bytes_equal( payload, payload_length, "Sensors" ) != 0 )
+        {
+            *value = REWAIR_DISP_SENSORS;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+    else if ( control == MQTT_CONTROL_BRIGHTNESS )
+    {
+        if ( mqtt_bytes_equal( payload, payload_length, "Bright" ) != 0 )
+        {
+            *value = REWAIR_SLEEP_ON;
+        }
+        else if ( mqtt_bytes_equal( payload, payload_length, "Auto" ) != 0 )
+        {
+            *value = REWAIR_SLEEP_DIM;
+        }
+        else if ( mqtt_bytes_equal( payload, payload_length, "Sleep" ) != 0 )
+        {
+            *value = REWAIR_SLEEP_SLEEP;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+    else if ( control == MQTT_CONTROL_UNITS )
+    {
+        if ( mqtt_bytes_equal( payload, payload_length, "Celsius" ) != 0 )
+        {
+            *value = REWAIR_UNITS_C;
+        }
+        else if ( mqtt_bytes_equal( payload, payload_length, "Fahrenheit" ) != 0 )
+        {
+            *value = REWAIR_UNITS_F;
+        }
+        else
+        {
+            return -1;
+        }
+    }
+    else
+    {
+        return -1;
+    }
+    return 0;
+}
+
+static rewair_settings_result_t mqtt_command_apply( uint32_t control, uint8_t value,
+                                                     rewair_settings_t* settings )
+{
+    switch ( control )
+    {
+        case MQTT_CONTROL_DISPLAY_MODE:
+            return rewair_settings_set_disp_mode( value, settings );
+        case MQTT_CONTROL_BRIGHTNESS:
+            return rewair_settings_set_sleep_mode( value, settings );
+        default:
+            return rewair_settings_set_units( value, settings );
+    }
+}
+
+static void mqtt_command_reject( mqtt_receive_context_t* context, uint8_t force_mask,
+                                 const char* reason )
+{
+    mqtt_note_command_error( );
+    printf( "[mqtt] command rejected: %s\n", reason );
+    if ( mqtt_control_states_publish( force_mask ) != 0 )
+    {
+        context->publish_failed = 1u;
+    }
+}
+
+static void mqtt_handle_command( mqtt_receive_context_t* context,
+                                 const rewair_mqtt_publish_event_t* publish )
+{
+    rewair_settings_t before;
+    rewair_settings_t after;
+    rewair_settings_result_t result;
+    uint8_t value;
+    uint8_t current;
+    uint8_t force_mask;
+    int control = mqtt_command_control( publish );
+
+    if ( control == -1 )
+    {
+        return;
+    }
+    mqtt_note_command( 0u );
+    force_mask = control >= 0 ? (uint8_t)( 1u << (uint32_t)control ) :
+                               (uint8_t)MQTT_CONTROL_ALL;
+
+    if ( context->controls_allowed == 0u )
+    {
+        mqtt_command_reject( context, force_mask, "controls unavailable" );
+        return;
+    }
+    if ( publish->retained != 0u )
+    {
+        mqtt_command_reject( context, force_mask, "retained command" );
+        return;
+    }
+    if ( publish->qos != 0u )
+    {
+        mqtt_command_reject( context, force_mask, "command QoS is not zero" );
+        return;
+    }
+    if ( control < 0 )
+    {
+        mqtt_command_reject( context, force_mask, "unknown control topic" );
+        return;
+    }
+    if ( mqtt_command_parse_value( (uint32_t)control, publish->payload,
+                                   publish->payload_length, &value ) != 0 )
+    {
+        mqtt_command_reject( context, force_mask, "invalid payload" );
+        return;
+    }
+    if ( rewair_settings_get( &before ) != REWAIR_SETTINGS_OK )
+    {
+        mqtt_command_reject( context, force_mask, "settings unavailable" );
+        return;
+    }
+    current = mqtt_control_value( (uint32_t)control, &before );
+    if ( current != value && mqtt_control_change_seen[control] != 0u &&
+         (uint32_t)( context->now_ms - mqtt_control_last_change_ms[control] ) <
+             REWAIR_MQTT_CONTROL_RATE_MS )
+    {
+        mqtt_command_reject( context, force_mask, "rate limited" );
+        return;
+    }
+
+    after = before;
+    result = mqtt_command_apply( (uint32_t)control, value, &after );
+    if ( mqtt_control_value( (uint32_t)control, &after ) != current )
+    {
+        mqtt_control_change_seen[control] = 1u;
+        mqtt_control_last_change_ms[control] = context->now_ms;
+    }
+    if ( result != REWAIR_SETTINGS_OK && result != REWAIR_SETTINGS_UNCHANGED )
+    {
+        mqtt_note_command_error( );
+        printf( "[mqtt] command apply failed result=%d\n", (int)result );
+    }
+    if ( mqtt_control_states_publish( force_mask ) != 0 )
+    {
+        context->publish_failed = 1u;
+    }
+}
+
+static void mqtt_decoder_event( void* arg, const rewair_mqtt_event_t* event )
+{
+    mqtt_receive_context_t* context = (mqtt_receive_context_t*)arg;
+
+    if ( event->type == REWAIR_MQTT_EVENT_SUBACK )
+    {
+        if ( context->expected_suback_id != 0u &&
+             event->data.suback.packet_id == context->expected_suback_id )
+        {
+            context->suback_seen = 1u;
+            context->suback_result = rewair_mqtt_suback_validate(
+                event, context->expected_suback_id );
+            if ( context->suback_result == REWAIR_MQTT_SUBACK_ACCEPTED )
+            {
+                context->controls_allowed = 1u;
+            }
+        }
+        return;
+    }
+    if ( event->type == REWAIR_MQTT_EVENT_PUBLISH )
+    {
+        mqtt_handle_command( context, &event->data.publish );
+    }
+}
+
+/* Returns 1 after processing one WICED packet, 0 on timeout/no data, and -1
+ * for a closed socket, packet corruption, or MQTT framing error. */
+static int mqtt_receive_one( uint32_t timeout_ms, mqtt_receive_context_t* context )
+{
+    wiced_packet_t* packet = NULL;
+    wiced_result_t result = wiced_tcp_receive( &mqtt_socket, &packet, timeout_ms );
+    uint16_t offset = 0u;
+
+    if ( result == WICED_TIMEOUT || result == WICED_WOULD_BLOCK )
+    {
+        return 0;
+    }
+    if ( result != WICED_SUCCESS || packet == NULL )
+    {
+        if ( packet != NULL )
+        {
+            wiced_packet_delete( packet );
+        }
+        mqtt_set_error( "MQTT receive failed" );
+        return -1;
+    }
+
+    {
+        wiced_time_t event_time = 0u;
+        (void)wiced_time_get_time( &event_time );
+        context->now_ms = (uint32_t)event_time;
+    }
+
+    while ( 1 )
+    {
+        uint8_t* data = NULL;
+        uint16_t fragment_length = 0u;
+        uint16_t available_length = 0u;
+        int decode_result;
+
+        if ( wiced_packet_get_data( packet, offset, &data, &fragment_length,
+                                    &available_length ) != WICED_SUCCESS ||
+             data == NULL || fragment_length == 0u )
+        {
+            wiced_packet_delete( packet );
+            mqtt_set_error( "invalid MQTT TCP packet" );
+            return -1;
+        }
+        decode_result = rewair_mqtt_decoder_feed( &mqtt_decoder, data,
+                                                   fragment_length,
+                                                   mqtt_decoder_event, context );
+        if ( decode_result != REWAIR_MQTT_DECODE_OK )
+        {
+            wiced_packet_delete( packet );
+            mqtt_set_error( decode_result == REWAIR_MQTT_DECODE_OVERSIZE ?
+                            "oversized MQTT frame" : "malformed MQTT stream" );
+            return -1;
+        }
+        if ( available_length <= fragment_length )
+        {
+            break;
+        }
+        offset = (uint16_t)( offset + fragment_length );
+    }
+    wiced_packet_delete( packet );
+    if ( context->publish_failed != 0u )
+    {
+        mqtt_set_error( "control state publish failed" );
+        return -1;
+    }
+    return 1;
+}
+
+static int mqtt_receive_drain( uint32_t now_ms )
+{
+    mqtt_receive_context_t context;
+    uint32_t i;
+
+    memset( &context, 0, sizeof( context ) );
+    context.controls_allowed = mqtt_controls_ready;
+    context.now_ms = now_ms;
+    for ( i = 0u; i < REWAIR_MQTT_RX_DRAIN_MAX; i++ )
+    {
+        int result = mqtt_receive_one( WICED_NO_WAIT, &context );
+        if ( result < 0 )
+        {
+            return -1;
+        }
+        if ( result == 0 )
+        {
+            break;
+        }
+    }
+    return 0;
+}
+
+static uint16_t mqtt_allocate_packet_id( void )
+{
+    uint16_t packet_id = mqtt_next_packet_id++;
+
+    if ( mqtt_next_packet_id == 0u )
+    {
+        mqtt_next_packet_id = 1u;
+    }
+    if ( packet_id == 0u )
+    {
+        packet_id = mqtt_next_packet_id++;
+    }
+    return packet_id;
+}
+
+/* A rejected or timed-out subscription disables only controls.  A malformed stream
+ * or closed socket is fatal so the caller can reconnect cleanly. */
+static int mqtt_controls_subscribe( void )
+{
+    mqtt_receive_context_t context;
+    char topic[REWAIR_MQTT_TOPIC_MAX];
+    uint16_t packet_id = mqtt_allocate_packet_id( );
+    wiced_time_t start_time = 0u;
+    uint32_t i;
+    int length;
+
+    mqtt_controls_ready = 0u;
+    mqtt_set_control_count( 0u );
+    length = snprintf( topic, sizeof( topic ), "%s/settings/+/set", mqtt_base_topic );
+    if ( length < 0 || (uint32_t)length >= sizeof( topic ) )
+    {
+        mqtt_set_error( "MQTT control topic too long" );
+        return -1;
+    }
+    length = rewair_mqtt_packet_subscribe( topic, packet_id,
+                                           mqtt_packet, sizeof( mqtt_packet ) );
+    if ( length < 0 || mqtt_send_bytes( mqtt_packet, (uint32_t)length ) != 0 )
+    {
+        mqtt_set_error( "MQTT control subscribe send failed" );
+        return -1;
+    }
+
+    memset( &context, 0, sizeof( context ) );
+    context.expected_suback_id = packet_id;
+    context.suback_result = REWAIR_MQTT_SUBACK_INVALID;
+    (void)wiced_time_get_time( &start_time );
+    for ( i = 0u; i < REWAIR_MQTT_SUBACK_PACKETS_MAX; i++ )
+    {
+        wiced_time_t now_time = 0u;
+        uint32_t elapsed;
+        uint32_t timeout;
+        int receive_result;
+
+        (void)wiced_time_get_time( &now_time );
+        elapsed = (uint32_t)( (uint32_t)now_time - (uint32_t)start_time );
+        if ( elapsed >= REWAIR_MQTT_RX_TIMEOUT_MS )
+        {
+            break;
+        }
+        timeout = REWAIR_MQTT_RX_TIMEOUT_MS - elapsed;
+        context.now_ms = (uint32_t)now_time;
+        receive_result = mqtt_receive_one( timeout, &context );
+        if ( receive_result < 0 )
+        {
+            return -1;
+        }
+        if ( receive_result == 0 || context.suback_seen != 0u )
+        {
+            break;
+        }
+    }
+
+    if ( context.suback_seen != 0u &&
+         context.suback_result == REWAIR_MQTT_SUBACK_ACCEPTED )
+    {
+        mqtt_controls_ready = 1u;
+        mqtt_set_control_count( MQTT_CONTROL_COUNT );
+        return 0;
+    }
+    if ( context.suback_seen != 0u &&
+         context.suback_result == REWAIR_MQTT_SUBACK_REJECTED )
+    {
+        mqtt_set_error( "broker rejected MQTT controls" );
+    }
+    else if ( context.suback_seen != 0u )
+    {
+        mqtt_set_error( "invalid MQTT controls SUBACK" );
+    }
+    else
+    {
+        mqtt_set_error( "MQTT controls SUBACK timeout" );
+    }
+    return 0;
+}
+
 static int mqtt_connect_broker( void )
 {
     wiced_ip_address_t broker_ip;
     rewair_mqtt_connect_options_t options;
     wiced_result_t result;
+    uint32_t publish_generation;
     int length;
 
     mqtt_set_error( "" );
@@ -535,15 +1221,33 @@ static int mqtt_connect_broker( void )
 
     mqtt_connected = 1u;
     mqtt_set_connected( 1u );
+    mqtt_control_state_valid = 0u;
+    if ( rewair_mqtt_decoder_init( &mqtt_decoder, mqtt_rx_frame,
+                                   sizeof( mqtt_rx_frame ) ) != REWAIR_MQTT_DECODE_OK )
+    {
+        mqtt_set_error( "MQTT decoder init failed" );
+        mqtt_close_socket( );
+        return -1;
+    }
+    mqtt_controls_ready = 0u;
+    mqtt_set_control_count( 0u );
+    if ( active_config.discovery != 0u && mqtt_controls_subscribe( ) != 0 )
+    {
+        mqtt_close_socket( );
+        return -1;
+    }
+    publish_generation = mqtt_state_generation;
     if ( mqtt_publish( mqtt_availability_topic, "online", 1u ) != 0 ||
          ( active_config.discovery != 0u && mqtt_discovery_publish( 0u ) != 0 ) ||
-         mqtt_state_publish( ) != 0 )
+         mqtt_state_publish( ) != 0 ||
+         ( mqtt_controls_ready != 0u &&
+           mqtt_control_states_publish( MQTT_CONTROL_ALL ) != 0 ) )
     {
         mqtt_set_error( "initial MQTT publish failed" );
         mqtt_close_socket( );
         return -1;
     }
-    mqtt_state_dirty = 0u;
+    mqtt_initial_state_generation = publish_generation;
     printf( "[mqtt] connected broker=%s:%u topic=%s\n",
             active_config.host, active_config.port, mqtt_base_topic );
     return 0;
@@ -577,6 +1281,7 @@ static int time_reached( uint32_t now, uint32_t deadline )
 static void mqtt_thread_main( uint32_t arg )
 {
     uint32_t seen_generation = 0u;
+    uint32_t seen_state_generation = 0u;
     uint32_t next_connect_ms = 0u;
     uint32_t last_publish_ms = 0u;
 
@@ -609,7 +1314,7 @@ static void mqtt_thread_main( uint32_t arg )
             active_config = new_config;
             seen_generation = generation;
             next_connect_ms = now_ms;
-            mqtt_state_dirty = 1u;
+            mqtt_state_generation++;
             mqtt_last_discovery_name[0] = '\0';
             if ( active_config.enabled == 0u )
             {
@@ -640,6 +1345,7 @@ static void mqtt_thread_main( uint32_t arg )
                 if ( mqtt_connect_broker( ) == 0 )
                 {
                     last_publish_ms = now_ms;
+                    seen_state_generation = mqtt_initial_state_generation;
                 }
                 else
                 {
@@ -650,9 +1356,18 @@ static void mqtt_thread_main( uint32_t arg )
             continue;
         }
 
-        if ( mqtt_state_dirty != 0u )
+        if ( mqtt_receive_drain( now_ms ) != 0 )
+        {
+            mqtt_close_socket( );
+            next_connect_ms = now_ms + REWAIR_MQTT_RETRY_MS;
+            continue;
+        }
+
+        if ( mqtt_state_generation != seen_state_generation )
         {
             rewair_status_t state;
+            uint32_t publish_generation = mqtt_state_generation;
+
             rewair_state_snapshot( &state );
             if ( active_config.discovery != 0u &&
                  strcmp( mqtt_last_discovery_name, state.name ) != 0 &&
@@ -663,20 +1378,21 @@ static void mqtt_thread_main( uint32_t arg )
                 next_connect_ms = now_ms + REWAIR_MQTT_RETRY_MS;
                 continue;
             }
-            if ( mqtt_state_publish( ) != 0 )
+            if ( mqtt_state_publish( ) != 0 ||
+                 ( mqtt_controls_ready != 0u &&
+                   mqtt_control_states_publish( 0u ) != 0 ) )
             {
                 mqtt_set_error( "state publish failed" );
                 mqtt_close_socket( );
                 next_connect_ms = now_ms + REWAIR_MQTT_RETRY_MS;
                 continue;
             }
-            mqtt_state_dirty = 0u;
+            seen_state_generation = publish_generation;
             last_publish_ms = now_ms;
         }
         else if ( (uint32_t)( now_ms - last_publish_ms ) >= REWAIR_MQTT_HEARTBEAT_MS )
         {
-            /* A repeated QoS-0 publish satisfies the MQTT keepalive without
-             * accumulating unread PINGRESP packets in this publish-only client. */
+            /* A repeated QoS-0 publish satisfies the MQTT keepalive. */
             if ( mqtt_publish( mqtt_availability_topic, "online", 1u ) != 0 ||
                  mqtt_state_publish( ) != 0 )
             {

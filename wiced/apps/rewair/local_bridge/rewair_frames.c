@@ -4,6 +4,7 @@
 #include "rewair_frames.h"
 
 #include <stdio.h>
+#include <string.h>
 #include "wiced_tcpip.h"
 #include "wiced_wifi.h"
 #include "internal/wiced_internal_api.h"
@@ -24,13 +25,46 @@ volatile uint32_t sensor_uart_tx_sr_after = 0u;
 volatile uint32_t sensor_boot_context_sent = 0u;
 volatile uint32_t sensor_netw_boot_pulses = 0u;
 
-rewair_tz_rule_t current_tz_rule;
-uint32_t current_tz_rule_valid = 0u;
+static wiced_mutex_t timezone_context_mutex;
+static rewair_tz_rule_t current_tz_rule;
+static uint8_t current_tz_rule_valid = 0u;
+static uint8_t timezone_context_ready = 0u;
+
+wiced_result_t rewair_time_context_init( void )
+{
+    wiced_result_t result;
+
+    if ( timezone_context_ready != 0u )
+    {
+        return WICED_SUCCESS;
+    }
+    result = wiced_rtos_init_mutex( &timezone_context_mutex );
+    if ( result != WICED_SUCCESS )
+    {
+        printf( "[time] context mutex init failed: %d\n", (int)result );
+        return result;
+    }
+    memset( &current_tz_rule, 0, sizeof( current_tz_rule ) );
+    current_tz_rule_valid = 0u;
+    timezone_context_ready = 1u;
+    return WICED_SUCCESS;
+}
 
 void sensor_set_tz_rule( const rewair_tz_rule_t* rule )
 {
+    if ( rule == NULL || timezone_context_ready == 0u )
+    {
+        printf( "[time] cannot set timezone rule before context init\n" );
+        return;
+    }
+    if ( wiced_rtos_lock_mutex( &timezone_context_mutex ) != WICED_SUCCESS )
+    {
+        printf( "[time] timezone rule lock failed\n" );
+        return;
+    }
     current_tz_rule = *rule;
     current_tz_rule_valid = 1u;
+    wiced_rtos_unlock_mutex( &timezone_context_mutex );
 }
 
 uint32_t fields_payload_len( char** fields, uint32_t count )
@@ -166,7 +200,7 @@ void send_netw_up( void )
     printf( "[netw] net=1 rssi=%s ip=%s mac=%s\n", rssi_buf, ip_buf, mac_buf );
 }
 
-void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year )
+static void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year )
 {
     char dst_on[15];
     char dst_off[15];
@@ -215,7 +249,7 @@ void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year )
     }
 }
 
-void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds )
+static void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds )
 {
     char time_value[15];
     int16_t offset_min = 0;
@@ -228,14 +262,51 @@ void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds )
     printf( "[time] sent TIME %s offset_min=%d dst=%u\n", time_value, (int)offset_min, (unsigned)dst );
 }
 
+void send_tinf_context( uint32_t year )
+{
+    rewair_tz_rule_t rule;
+
+    if ( timezone_context_ready == 0u ||
+         wiced_rtos_lock_mutex( &timezone_context_mutex ) != WICED_SUCCESS )
+    {
+        printf( "[time] TINF context unavailable\n" );
+        return;
+    }
+    if ( current_tz_rule_valid == 0u )
+    {
+        wiced_rtos_unlock_mutex( &timezone_context_mutex );
+        printf( "[time] timezone rule is not set\n" );
+        return;
+    }
+    rule = current_tz_rule;
+    send_tinf_from_rule( &rule, year );
+    wiced_rtos_unlock_mutex( &timezone_context_mutex );
+}
+
 void send_time_context( uint32_t utc_seconds )
 {
     wall_time_t utc_wall;
+    rewair_tz_rule_t rule;
 
+    if ( timezone_context_ready == 0u ||
+         wiced_rtos_lock_mutex( &timezone_context_mutex ) != WICED_SUCCESS )
+    {
+        printf( "[time] TIME context unavailable\n" );
+        return;
+    }
+    if ( current_tz_rule_valid == 0u )
+    {
+        wiced_rtos_unlock_mutex( &timezone_context_mutex );
+        printf( "[time] timezone rule is not set\n" );
+        return;
+    }
+
+    rule = current_tz_rule;
     epoch_utc_to_wall( utc_seconds, &utc_wall );
-    send_tinf_from_rule( &current_tz_rule, utc_wall.year );
+    send_tinf_from_rule( &rule, utc_wall.year );
     wiced_rtos_delay_milliseconds( 20u );
-    send_time_from_rule( &current_tz_rule, utc_seconds );
+    send_time_from_rule( &rule, utc_seconds );
+    wiced_rtos_unlock_mutex( &timezone_context_mutex );
 }
 
 void send_disp_clock_canary( void )
@@ -305,7 +376,7 @@ void send_sensor_boot_context( void )
     sensor_boot_context_sent = 1u;
     send_netw_up( );
     wiced_rtos_delay_milliseconds( 20u );
-    send_tinf_from_rule( &current_tz_rule, 2026u );
+    send_tinf_context( 2026u );
 }
 
 void send_scor_from_sens( const sens_values_t* sens )

@@ -455,14 +455,11 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
                                      void* arg, wiced_http_message_body_t* http_data )
 {
     char body[API_BODY_MAX];
-    rewair_settings_t settings;
+    rewair_settings_patch_t patch;
+    rewair_settings_result_t result;
     char text[65];
     int len;
     int got;
-    int got_disp_mode;
-    int got_sleep_mode;
-    uint8_t previous_units;
-    wiced_utc_time_t now = 0u;
 
     (void)url; (void)arg;
     if ( !method_is( http_data, WICED_HTTP_POST_REQUEST ) )
@@ -476,10 +473,10 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
         return 0;
     }
 
-    rewair_settings_load( &settings );
-    previous_units = settings.units;
+    memset( &patch, 0, sizeof( patch ) );
 
-    got = rewair_req_get_string( body, (uint32_t)len, "name", text, sizeof( settings.name ) );
+    got = rewair_req_get_string( body, (uint32_t)len, "name", patch.name,
+                                 sizeof( patch.name ) );
     if ( got < 0 )
     {
         /* rewair_req_get_string returns -1 for a body that fails to tokenize as
@@ -491,8 +488,7 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     }
     if ( got == 1 )
     {
-        strncpy( settings.name, text, sizeof( settings.name ) - 1u );
-        settings.name[sizeof( settings.name ) - 1u] = '\0';
+        patch.fields |= REWAIR_SETTINGS_FIELD_NAME;
     }
 
     got = rewair_req_get_string( body, (uint32_t)len, "units", text, sizeof( text ) );
@@ -500,17 +496,18 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     {
         if ( strcmp( text, "c" ) == 0 )
         {
-            settings.units = 0u;
+            patch.units = REWAIR_UNITS_C;
         }
         else if ( strcmp( text, "f" ) == 0 )
         {
-            settings.units = 1u;
+            patch.units = REWAIR_UNITS_F;
         }
         else
         {
             api_send_error( stream, HTTP_HEADER_400, "units must be c or f" );
             return 0;
         }
+        patch.fields |= REWAIR_SETTINGS_FIELD_UNITS;
     }
 
     got = rewair_req_get_string( body, (uint32_t)len, "time_mode", text, sizeof( text ) );
@@ -518,57 +515,57 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     {
         if ( strcmp( text, "auto" ) == 0 )
         {
-            settings.time_mode = 0u;
+            patch.time_mode = REWAIR_TIME_AUTO;
         }
         else if ( strcmp( text, "manual" ) == 0 )
         {
-            settings.time_mode = 1u;
+            patch.time_mode = REWAIR_TIME_MANUAL;
         }
         else
         {
             api_send_error( stream, HTTP_HEADER_400, "time_mode must be auto or manual" );
             return 0;
         }
+        patch.fields |= REWAIR_SETTINGS_FIELD_TIME_MODE;
     }
 
     got = rewair_req_get_string( body, (uint32_t)len, "disp_mode", text, sizeof( text ) );
-    got_disp_mode = got;
     if ( got == 1 )
     {
         if ( strcmp( text, "score" ) == 0 )
         {
-            settings.disp_mode = 0u;
+            patch.disp_mode = REWAIR_DISP_SCORE;
         }
         else if ( strcmp( text, "clock" ) == 0 )
         {
-            settings.disp_mode = 1u;
+            patch.disp_mode = REWAIR_DISP_CLOCK;
         }
         else if ( strcmp( text, "sensors" ) == 0 )
         {
-            settings.disp_mode = 2u;
+            patch.disp_mode = REWAIR_DISP_SENSORS;
         }
         else
         {
             api_send_error( stream, HTTP_HEADER_400, "disp_mode must be score, clock, or sensors" );
             return 0;
         }
+        patch.fields |= REWAIR_SETTINGS_FIELD_DISP_MODE;
     }
 
     got = rewair_req_get_string( body, (uint32_t)len, "sleep_mode", text, sizeof( text ) );
-    got_sleep_mode = got;
     if ( got == 1 )
     {
         if ( strcmp( text, "dim" ) == 0 )
         {
-            settings.sleep_mode = REWAIR_SLEEP_DIM;
+            patch.sleep_mode = REWAIR_SLEEP_DIM;
         }
         else if ( strcmp( text, "on" ) == 0 )
         {
-            settings.sleep_mode = REWAIR_SLEEP_ON;
+            patch.sleep_mode = REWAIR_SLEEP_ON;
         }
         else if ( strcmp( text, "sleep" ) == 0 )
         {
-            settings.sleep_mode = REWAIR_SLEEP_SLEEP;
+            patch.sleep_mode = REWAIR_SLEEP_SLEEP;
         }
         else
         {
@@ -576,67 +573,52 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
                             "sleep_mode must be dim, on, or sleep" );
             return 0;
         }
+        patch.fields |= REWAIR_SETTINGS_FIELD_SLEEP_MODE;
     }
 
-    /* Validate tz_posix (if present) before any hardware side effects below,
-     * so a 400 here never leaves the disp/tz state half-applied. */
+    /* Preserve the route's specific timezone error while the settings owner
+     * performs the authoritative validation again under its mutation lock. */
     {
-        char tz_posix[sizeof( settings.tz_posix )];
-        char tz_zone[sizeof( settings.tz_zone )];
         rewair_tz_rule_t rule;
-        int got_posix = rewair_req_get_string( body, (uint32_t)len, "tz_posix", tz_posix, sizeof( tz_posix ) );
-        int got_zone = rewair_req_get_string( body, (uint32_t)len, "tz_zone", tz_zone, sizeof( tz_zone ) );
+        int got_posix = rewair_req_get_string( body, (uint32_t)len, "tz_posix",
+                                               patch.tz_posix, sizeof( patch.tz_posix ) );
+        int got_zone = rewair_req_get_string( body, (uint32_t)len, "tz_zone",
+                                              patch.tz_zone, sizeof( patch.tz_zone ) );
 
-        if ( got_posix == 1 && rewair_tz_parse( tz_posix, &rule ) != 0 )
+        if ( got_posix == 1 && rewair_tz_parse( patch.tz_posix, &rule ) != 0 )
         {
             api_send_error( stream, HTTP_HEADER_400, "bad tz rule" );
             return 0;
         }
-
         if ( got_posix == 1 )
         {
-            strncpy( settings.tz_posix, tz_posix, sizeof( settings.tz_posix ) - 1u );
-            settings.tz_posix[sizeof( settings.tz_posix ) - 1u] = '\0';
-            if ( got_zone == 1 )
-            {
-                strncpy( settings.tz_zone, tz_zone, sizeof( settings.tz_zone ) - 1u );
-                settings.tz_zone[sizeof( settings.tz_zone ) - 1u] = '\0';
-            }
-            sensor_set_tz_rule( &rule );
-            if ( wiced_time_get_utc_time( &now ) == WICED_SUCCESS && now != 0u )
-            {
-                send_time_context( (uint32_t)now );
-            }
+            patch.fields |= REWAIR_SETTINGS_FIELD_TZ_POSIX;
         }
-        else if ( got_zone == 1 )
+        if ( got_zone == 1 )
         {
-            strncpy( settings.tz_zone, tz_zone, sizeof( settings.tz_zone ) - 1u );
-            settings.tz_zone[sizeof( settings.tz_zone ) - 1u] = '\0';
+            patch.fields |= REWAIR_SETTINGS_FIELD_TZ_ZONE;
         }
     }
 
-    if ( rewair_settings_save( &settings ) != 0 )
+    result = rewair_settings_apply_patch( &patch, NULL, NULL );
+    if ( result == REWAIR_SETTINGS_ERR_INVALID )
+    {
+        api_send_error( stream, HTTP_HEADER_400, "invalid settings" );
+        return 0;
+    }
+    if ( result == REWAIR_SETTINGS_ERR_STORAGE )
     {
         api_send_error( stream, HTTP_HEADER_500, "settings save failed" );
         return 0;
     }
-    rewair_settings_apply_to_state( &settings );
-    if ( got_disp_mode == 1 ||
-         ( settings.units != previous_units && settings.disp_mode == 2u ) )
-    {
-        const char* display_mode = settings.disp_mode == 0u ? "score" :
-                                   settings.disp_mode == 1u ? "clock" : "sensors";
-
-        /* sensor_send_disp_mode("sensors") snapshots the shared unit setting
-         * to choose temp_humid_c vs temp_humid_f, so state must be updated
-         * before the F103 command is emitted. A unit-only change also needs
-         * this refresh while the aggregate Sensors mode remains selected. */
-        (void)sensor_send_disp_mode( display_mode );
-    }
-    if ( got_sleep_mode == 1 &&
-         sensor_send_sleep_mode( settings.sleep_mode ) != WICED_SUCCESS )
+    if ( result == REWAIR_SETTINGS_ERR_DISPLAY )
     {
         api_send_error( stream, HTTP_HEADER_500, "display command failed" );
+        return 0;
+    }
+    if ( result < 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "settings unavailable" );
         return 0;
     }
     api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
@@ -671,7 +653,7 @@ static void api_mqtt_send_status( wiced_http_response_stream_t* stream )
     char topic[REWAIR_MQTT_TOPIC_PREFIX_MAX * 2u];
     char discovery_prefix[REWAIR_MQTT_DISCOVERY_PREFIX_MAX * 2u];
     char error[128];
-    char body[768];
+    char body[1024];
     int length;
 
     rewair_mqtt_config_load( &config );
@@ -687,14 +669,18 @@ static void api_mqtt_send_status( wiced_http_response_stream_t* stream )
         "{\"enabled\":%s,\"connected\":%s,\"host\":\"%s\",\"port\":%u,"
         "\"username\":\"%s\",\"password_set\":%s,\"topic_prefix\":\"%s\","
         "\"discovery\":%s,\"discovery_prefix\":\"%s\","
-        "\"published\":%lu,\"reconnects\":%lu,\"last_error\":\"%s\","
+        "\"published\":%lu,\"reconnects\":%lu,"
+        "\"controls\":%lu,\"commands\":%lu,\"command_errors\":%lu,"
+        "\"last_error\":\"%s\","
         "\"tls\":false}",
         config.enabled != 0u ? "true" : "false",
         status.connected != 0u ? "true" : "false",
         host, config.port, username,
         config.password[0] != '\0' ? "true" : "false", topic,
         config.discovery != 0u ? "true" : "false", discovery_prefix,
-        (unsigned long)status.published, (unsigned long)status.reconnects, error );
+        (unsigned long)status.published, (unsigned long)status.reconnects,
+        (unsigned long)status.controls, (unsigned long)status.commands,
+        (unsigned long)status.command_errors, error );
     if ( length < 0 || (uint32_t)length >= sizeof( body ) )
     {
         api_send_error( stream, HTTP_HEADER_500, "MQTT status too large" );
@@ -862,7 +848,8 @@ static int32_t api_disp_handler( const char* url, wiced_http_response_stream_t* 
     char body[API_BODY_MAX];
     char mode[16];
     int len;
-    rewair_settings_t settings;
+    uint8_t disp_mode;
+    rewair_settings_result_t result;
 
     (void)url; (void)arg;
     if ( !method_is( http_data, WICED_HTTP_POST_REQUEST ) )
@@ -880,27 +867,40 @@ static int32_t api_disp_handler( const char* url, wiced_http_response_stream_t* 
         api_send_error( stream, HTTP_HEADER_400, "mode required" );
         return 0;
     }
-    if ( sensor_send_disp_mode( mode ) != WICED_SUCCESS )
+    if ( strcmp( mode, "score" ) == 0 )
+    {
+        disp_mode = REWAIR_DISP_SCORE;
+    }
+    else if ( strcmp( mode, "clock" ) == 0 )
+    {
+        disp_mode = REWAIR_DISP_CLOCK;
+    }
+    else if ( strcmp( mode, "sensors" ) == 0 )
+    {
+        disp_mode = REWAIR_DISP_SENSORS;
+    }
+    else
     {
         api_send_error( stream, HTTP_HEADER_400, "mode must be score, clock, or sensors" );
         return 0;
     }
 
-    rewair_settings_load( &settings );
-    if ( strcmp( mode, "score" ) == 0 )
+    result = rewair_settings_set_disp_mode( disp_mode, NULL );
+    if ( result == REWAIR_SETTINGS_ERR_STORAGE )
     {
-        settings.disp_mode = 0u;
+        api_send_error( stream, HTTP_HEADER_500, "settings save failed" );
+        return 0;
     }
-    else if ( strcmp( mode, "clock" ) == 0 )
+    if ( result == REWAIR_SETTINGS_ERR_DISPLAY )
     {
-        settings.disp_mode = 1u;
+        api_send_error( stream, HTTP_HEADER_500, "display command failed" );
+        return 0;
     }
-    else
+    if ( result < 0 )
     {
-        settings.disp_mode = 2u;
+        api_send_error( stream, HTTP_HEADER_500, "settings unavailable" );
+        return 0;
     }
-    rewair_settings_save( &settings );
-    rewair_settings_apply_to_state( &settings );
 
     api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
     return 0;
