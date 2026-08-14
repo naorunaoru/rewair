@@ -3,7 +3,7 @@ SRCDIR := ../../wiced/apps/rewair/local_bridge
 PLATFORMDIR := ../../wiced/platforms/AWAIR
 CFLAGS := -std=c99 -Wall -Wextra -Werror -I$(SRCDIR) -I$(PLATFORMDIR) -DJSMN_PARENT_LINKS
 
-TESTS := test_drops test_tz test_req test_status test_uifs test_walltime test_score test_ota test_mqtt_packet test_ble_proto
+TESTS := test_drops test_tz test_req test_status test_uifs test_walltime test_score test_ota test_mqtt_packet test_ble_proto test_settings
 
 RWFS_FIXTURE := /tmp/test_uifs_fixture.rwfs
 
@@ -40,6 +40,9 @@ test_mqtt_packet: test_mqtt_packet.c $(SRCDIR)/rewair_mqtt_packet.c
 
 test_ble_proto: test_ble_proto.c $(SRCDIR)/rewair_ble_proto.c
 	$(CC) $(CFLAGS) -o $@ $^ && ./$@
+
+test_settings: test_settings.c $(SRCDIR)/rewair_settings.c $(SRCDIR)/rewair_tz.c
+	$(CC) $(CFLAGS) -DREWAIR_HOST_BUILD -Istubs -pthread -o $@ $^ && ./$@
 
 clean:
 	rm -f $(TESTS) $(RWFS_FIXTURE)

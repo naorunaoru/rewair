@@ -203,12 +203,6 @@ static wiced_result_t wifi_firmware_prepare_dct( void )
     return WICED_SUCCESS;
 }
 
-/* current_tz_rule, current_tz_rule_valid, and sensor_set_tz_rule() now live
- * in rewair_frames.c (Phase 2 Task 8, primary writer: sensor_set_tz_rule);
- * both statics are declared extern in rewair_frames.h because
- * application_start's DST-recheck loop below reads them directly. */
-static rewair_settings_t current_settings;
-
 /* ---- External SPI flash (Macronix MX25L1606E) -- OTA/WLAN data ----
  * Lazily initialized on first use by either the console "sflash" commands or
  * the /api/debug/sflash route (web_api.c); both share this handle so the SPI
@@ -1124,15 +1118,16 @@ void application_start( void )
         return;
     }
 
+    if ( rewair_time_context_init( ) != WICED_SUCCESS )
     {
-        rewair_tz_rule_t rule;
+        printf( "time context init failed\n" );
+        return;
+    }
 
-        rewair_settings_load( &current_settings );
-        if ( rewair_tz_parse( current_settings.tz_posix, &rule ) == 0 )
-        {
-            sensor_set_tz_rule( &rule );
-        }
-        rewair_settings_apply_to_state( &current_settings );
+    if ( rewair_settings_init( ) != REWAIR_SETTINGS_OK )
+    {
+        printf( "settings init failed\n" );
+        return;
     }
 
     setvbuf( stdin, NULL, _IONBF, 0 );
@@ -1175,29 +1170,15 @@ void application_start( void )
 
     sensor_reset_release( );
 
+    while ( 1 )
     {
-        int16_t last_offset_sent = 0;
-        uint8_t offset_known = 0u;
-
-        while ( 1 )
+        wiced_rtos_delay_milliseconds( 60000u );
+        if ( wifi_time_synced != 0u )
         {
-            wiced_rtos_delay_milliseconds( 60000u );
-            if ( current_tz_rule_valid != 0u && wifi_time_synced != 0u )
-            {
-                wiced_utc_time_t now = 0u;
-                int16_t offset_min = 0;
-                uint8_t dst = 0u;
+            wiced_utc_time_t now = 0u;
 
-                wiced_time_get_utc_time( &now );
-                rewair_tz_eval( &current_tz_rule, (uint32_t)now, &offset_min, &dst );
-                if ( offset_known == 0u || offset_min != last_offset_sent )
-                {
-                    send_time_context( (uint32_t)now );
-                    rewair_settings_apply_to_state( &current_settings );
-                    last_offset_sent = offset_min;
-                    offset_known = 1u;
-                }
-            }
+            wiced_time_get_utc_time( &now );
+            (void)rewair_settings_time_tick( (uint32_t)now );
         }
     }
 }

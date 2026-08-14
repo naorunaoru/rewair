@@ -334,7 +334,7 @@ static void console_handle_command( int argc, char* argv[] )
             printf( "usage: tinf [year]\n" );
             return;
         }
-        send_tinf_from_rule( &current_tz_rule, year );
+        send_tinf_context( year );
     }
     else if ( cstr_eq( argv[0], "context" ) )
     {
