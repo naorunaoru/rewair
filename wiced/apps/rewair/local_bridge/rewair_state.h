@@ -28,6 +28,8 @@ typedef struct rewair_status
     int32_t       rssi;
     char          ip[16], gw[16], dns[16];
     char          mac[18];
+    char          bssid[18];
+    uint32_t      channel;
     uint32_t      connected_s;
     uint32_t      drops;
     uint32_t      saved_count;
@@ -41,6 +43,7 @@ typedef struct rewair_status
     uint8_t       units;               /* 0 = c, 1 = f */
     uint8_t       time_mode;           /* 0 = auto, 1 = manual */
     uint8_t       disp_mode;           /* 0 = score, 1 = clock, 2 = sensors */
+    uint8_t       sleep_mode;          /* 0 = dim, 1 = on, 2 = sleep, 3 = unknown */
     int16_t       tz_offset_min;
     uint8_t       tz_dst;
     char          tz_zone[40];
@@ -60,11 +63,11 @@ void rewair_state_set_sens( const rewair_sens_t* sens, uint32_t score, const cha
                             const uint8_t idx[5] );
 void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
                                 const char* gw, const char* dns, const char* mac,
-                                uint32_t saved_count );
+                                const char* bssid, uint32_t channel, uint32_t saved_count );
 void rewair_state_set_wifi_ap( const char* ap_ssid, const char* ap_ip, const char* mac,
                                uint32_t saved_count );
 void rewair_state_wifi_drop( void );
 void rewair_state_set_time( uint32_t epoch, uint8_t synced );
 void rewair_state_set_settings( const char* name, uint8_t units, uint8_t time_mode,
-                                uint8_t disp_mode, const char* tz_zone, const char* tz_posix,
-                                int16_t tz_offset_min, uint8_t tz_dst );
+                                uint8_t disp_mode, uint8_t sleep_mode, const char* tz_zone,
+                                const char* tz_posix, int16_t tz_offset_min, uint8_t tz_dst );

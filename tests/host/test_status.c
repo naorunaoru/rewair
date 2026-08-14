@@ -22,9 +22,10 @@ int main( void )
     strcpy( st.ssid, "mikrotik-2g" ); st.rssi = -54;
     strcpy( st.ip, "192.168.88.10" ); strcpy( st.gw, "192.168.88.1" );
     strcpy( st.dns, "192.168.88.1" ); strcpy( st.mac, "aa:bb:cc:dd:ee:ff" );
+    strcpy( st.bssid, "11:22:33:44:55:66" ); st.channel = 11u;
     st.connected_s = 11520u; st.drops = 0u; st.saved_count = 3u;
     st.time_valid = 1u; st.time_synced = 1u; st.epoch = 1749300000u;
-    st.units = 0u; st.time_mode = 0u; st.disp_mode = 0u;
+    st.units = 0u; st.time_mode = 0u; st.disp_mode = 0u; st.sleep_mode = 0u;
     st.tz_offset_min = 60; st.tz_dst = 1u;
     strcpy( st.tz_zone, "Europe/Lisbon" );
     strcpy( st.tz_posix, "WET0WEST,M3.5.0/1,M10.5.0" );
@@ -40,12 +41,20 @@ int main( void )
     assert( strstr( buf, "\"light\":320" ) != NULL );
     assert( strstr( buf, "\"mode\":\"sta\"" ) != NULL );
     assert( strstr( buf, "\"rssi\":-54" ) != NULL );
+    assert( strstr( buf, "\"bssid\":\"11:22:33:44:55:66\"" ) != NULL );
+    assert( strstr( buf, "\"channel\":11" ) != NULL );
     assert( strstr( buf, "\"synced\":true" ) != NULL );
     assert( strstr( buf, "\"tz_offset\":60" ) != NULL );
     assert( strstr( buf, "\"tz_posix\":\"WET0WEST,M3.5.0\\/1,M10.5.0\"" ) == NULL ); /* no needless escaping */
     assert( strstr( buf, "\"tz_posix\":\"WET0WEST,M3.5.0/1,M10.5.0\"" ) != NULL );
     assert( strstr( buf, "\"units\":\"c\"" ) != NULL );
     assert( strstr( buf, "\"disp_mode\":\"score\"" ) != NULL );
+    assert( strstr( buf, "\"sleep_mode\":\"dim\"" ) != NULL );
+
+    st.sleep_mode = 3u;
+    len = rewair_json_status( &st, buf, sizeof( buf ) );
+    assert( len > 0 );
+    assert( strstr( buf, "\"sleep_mode\":\"unknown\"" ) != NULL );
 
     /* AP-mode variant */
     st.wifi_mode = 1u;
@@ -58,6 +67,8 @@ int main( void )
     assert( strstr( buf, "\"ap_ssid\":\"rewair-setup-ab12\"" ) != NULL );
     assert( strstr( buf, "\"ap_ip\":\"192.168.0.1\"" ) != NULL );
     assert( strstr( buf, "\"rssi\"" ) == NULL ); /* STA-only key must not appear */
+    assert( strstr( buf, "\"bssid\"" ) == NULL );
+    assert( strstr( buf, "\"channel\"" ) == NULL );
 
     /* name with a quote must be escaped */
     strcpy( st.name, "Bob's \"lab\"" );

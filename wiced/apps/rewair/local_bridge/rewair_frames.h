@@ -48,8 +48,8 @@ extern uint32_t current_tz_rule_valid;
 /* ---- Frame building ---- */
 uint32_t fields_payload_len( char** fields, uint32_t count );
 void frame_append( uint8_t* frame, uint32_t* frame_len, const void* data, uint32_t length );
-void sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t frame_len );
-void sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count );
+wiced_result_t sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t frame_len );
+wiced_result_t sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count );
 
 /* ---- Senders ---- */
 void sensor_set_tz_rule( const rewair_tz_rule_t* rule );
@@ -59,6 +59,7 @@ void send_time_from_rule( const rewair_tz_rule_t* rule, uint32_t utc_seconds );
 void send_time_context( uint32_t utc_seconds );
 void send_disp_clock_canary( void );
 wiced_result_t sensor_send_disp_mode( const char* mode );
+wiced_result_t sensor_send_sleep_mode( uint8_t mode );
 void sensor_apply_manual_time( uint32_t epoch );
 void send_sensor_boot_context( void );
 void send_scor_from_sens( const sens_values_t* sens );

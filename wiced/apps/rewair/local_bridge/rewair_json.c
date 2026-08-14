@@ -313,6 +313,7 @@ int rewair_json_status( const struct rewair_status* st, char* buf, uint32_t buf_
 {
     emit_t e = { buf, buf_size, 0u, 0 };
     static const char* disp_names[3] = { "score", "clock", "sensors" };
+    static const char* sleep_names[4] = { "dim", "on", "sleep", "unknown" };
 
     emit_raw( &e, "{" );
     emit_str( &e, "name", st->name );
@@ -349,6 +350,8 @@ int rewair_json_status( const struct rewair_status* st, char* buf, uint32_t buf_
         emit_str( &e, "gw", st->gw );              emit_raw( &e, "," );
         emit_str( &e, "dns", st->dns );            emit_raw( &e, "," );
         emit_str( &e, "mac", st->mac );            emit_raw( &e, "," );
+        emit_str( &e, "bssid", st->bssid );        emit_raw( &e, "," );
+        emit_int( &e, "channel", (int32_t)st->channel ); emit_raw( &e, "," );
         emit_int( &e, "connected_s", (int32_t)st->connected_s ); emit_raw( &e, "," );
         emit_int( &e, "drops", (int32_t)st->drops );             emit_raw( &e, "," );
         emit_int( &e, "saved_count", (int32_t)st->saved_count );
@@ -377,7 +380,8 @@ int rewair_json_status( const struct rewair_status* st, char* buf, uint32_t buf_
     emit_str( &e, "tz_zone", st->tz_zone );              emit_raw( &e, "," );
     emit_str( &e, "tz_posix", st->tz_posix );            emit_raw( &e, "," );
     emit_str( &e, "time_mode", st->time_mode == 0u ? "auto" : "manual" ); emit_raw( &e, "," );
-    emit_str( &e, "disp_mode", disp_names[ st->disp_mode > 2u ? 0u : st->disp_mode ] );
+    emit_str( &e, "disp_mode", disp_names[ st->disp_mode > 2u ? 0u : st->disp_mode ] ); emit_raw( &e, "," );
+    emit_str( &e, "sleep_mode", sleep_names[ st->sleep_mode > 3u ? 3u : st->sleep_mode ] );
     emit_raw( &e, "}}" );
 
     return e.overflow != 0 ? -1 : (int)e.pos;
