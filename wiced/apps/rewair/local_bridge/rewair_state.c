@@ -91,7 +91,7 @@ void rewair_state_set_sens( const rewair_sens_t* sens, uint32_t score, const cha
 
 void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
                                 const char* gw, const char* dns, const char* mac,
-                                uint32_t saved_count )
+                                const char* bssid, uint32_t channel, uint32_t saved_count )
 {
     int changed;
 
@@ -108,6 +108,8 @@ void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
               ( strcmp( state.gw, gw != NULL ? gw : "" ) != 0 ) ||
               ( strcmp( state.dns, dns != NULL ? dns : "" ) != 0 ) ||
               ( strcmp( state.mac, mac != NULL ? mac : "" ) != 0 ) ||
+              ( strcmp( state.bssid, bssid != NULL ? bssid : "" ) != 0 ) ||
+              ( state.channel != channel ) ||
               ( state.saved_count != saved_count );
     if ( !changed )
     {
@@ -121,6 +123,8 @@ void rewair_state_set_wifi_sta( const char* ssid, int32_t rssi, const char* ip,
     copy_str( state.gw, sizeof( state.gw ), gw );
     copy_str( state.dns, sizeof( state.dns ), dns );
     copy_str( state.mac, sizeof( state.mac ), mac );
+    copy_str( state.bssid, sizeof( state.bssid ), bssid );
+    state.channel = channel;
     state.saved_count = saved_count;
     if ( state.connected_s == 0u )
     {
@@ -147,6 +151,8 @@ void rewair_state_set_wifi_ap( const char* ap_ssid, const char* ap_ip, const cha
     state.ip[0] = '\0';
     state.gw[0] = '\0';
     state.dns[0] = '\0';
+    state.bssid[0] = '\0';
+    state.channel = 0u;
     state.connected_s = 0u;
     state.seq++;
     wiced_rtos_unlock_mutex( &state_mutex );
@@ -175,14 +181,15 @@ void rewair_state_set_time( uint32_t epoch, uint8_t synced )
 }
 
 void rewair_state_set_settings( const char* name, uint8_t units, uint8_t time_mode,
-                                uint8_t disp_mode, const char* tz_zone, const char* tz_posix,
-                                int16_t tz_offset_min, uint8_t tz_dst )
+                                uint8_t disp_mode, uint8_t sleep_mode, const char* tz_zone,
+                                const char* tz_posix, int16_t tz_offset_min, uint8_t tz_dst )
 {
     wiced_rtos_lock_mutex( &state_mutex );
     copy_str( state.name, sizeof( state.name ), name );
     state.units = units;
     state.time_mode = time_mode;
     state.disp_mode = disp_mode;
+    state.sleep_mode = sleep_mode;
     copy_str( state.tz_zone, sizeof( state.tz_zone ), tz_zone );
     copy_str( state.tz_posix, sizeof( state.tz_posix ), tz_posix );
     state.tz_offset_min = tz_offset_min;

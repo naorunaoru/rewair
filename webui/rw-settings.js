@@ -297,6 +297,11 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
       ? (status.time.synced ? 'Synced via NTP' : 'Set manually')
       : 'Not set — ' + (st.time_mode === 'auto' ? 'no RTC, waiting for network time' : 'no RTC, set the clock');
 
+    const sleepSub = st.sleep_mode === 'on' ? 'Fixed brightness; never turns off'
+      : st.sleep_mode === 'dim' ? 'Adapts to room light; never turns off'
+        : st.sleep_mode === 'sleep' ? 'Turns off automatically in darkness'
+          : 'Choose how the display responds to room light';
+
     const clock = html`<span class="set-val">${status.time.valid && now
       ? RW.fmtDate(now) + ' · ' + RW.fmtClock(now, true) : '--:--'}</span>`;
     const timeSeg = html`<${Seg} value=${st.time_mode} options=${[['auto', 'Auto'], ['manual', 'Manual']]}
@@ -316,6 +321,11 @@ import './rw-system.js'; // registers RW.FirmwareModal / RW.ResetModal
         <${Row} id="units" name="Temperature unit" open=${open} setOpen=${setOpen}
           ctrl=${html`<${Seg} value=${st.units} options=${[['c', '°C'], ['f', '°F']]}
             onChange=${(v) => onPatch({ units: v })} />`} />
+
+        <${Row} id="sleep" name="Display brightness" sub=${sleepSub} open=${open} setOpen=${setOpen}
+          ctrl=${html`<${Seg} value=${st.sleep_mode}
+            options=${[['on', 'Bright'], ['dim', 'Auto'], ['sleep', 'Sleep']]}
+            onChange=${(v) => onPatch({ sleep_mode: v })} />`} />
 
         <${Row} id="time" name="Time & date" sub=${timeSub} open=${open} setOpen=${setOpen}
           ctrl=${html`${clock}${timeSeg}`}

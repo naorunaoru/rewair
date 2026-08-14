@@ -44,6 +44,7 @@ import RewairAPI from './rw-api.js';
     const w = status.wifi;
     const rows = [
       ['Network', w.ssid], ['Signal', w.rssi != null ? w.rssi + ' dBm' : '–'],
+      ['Access point', w.bssid], ['Channel', w.channel],
       ['IP address', w.ip], ['Gateway', w.gw], ['DNS', w.dns], ['MAC address', w.mac]
     ];
     return html`

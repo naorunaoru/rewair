@@ -30,7 +30,7 @@
   - GET  /api/status   -> { name, fw, score{value,color,indices},
                             sens{temp,humid,co2,voc,dust,light},
                             wifi(sta|ap){…,saved_count}, time{valid,epoch,synced},
-                            settings{name,units,tz_offset,tz_dst,tz_zone,time_mode,disp_mode} }
+                            settings{name,units,tz_offset,tz_dst,tz_zone,time_mode,disp_mode,sleep_mode} }
   - GET  /api/scan     -> [ {ssid,rssi,sec} ]
   - GET  /api/networks -> [ {ssid,sec,saved,in_range,rssi,connected} ]  (priority order)
   - POST /api/join {ssid,pass} · /api/forget {ssid} · /api/priority {order:[ssid…]}

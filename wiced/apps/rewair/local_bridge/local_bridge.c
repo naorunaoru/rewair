@@ -138,7 +138,10 @@ static uint32_t sensor_raw_trace_reported = 0u;
  * dct_wifi_mutex convention). */
 volatile uint32_t wifi_time_synced = 0u;
 volatile uint32_t wifi_last_ntp_sync_ms = 0u;
-static volatile uint32_t wifi_network_ready_ms = 0u;
+/* F103 boot retry timing starts when its reset line is released.  It must not
+ * depend on STA association or DHCP: NETW is also the display/runtime-enable
+ * handshake and an offline device still needs to show readings. */
+static volatile uint32_t sensor_boot_start_ms = 0u;
 
 /* The Wi-Fi firmware is read through WICED's multi-app table in external
  * flash.  Existing units have the DCT slot pointing at the SDK default LUT
@@ -380,11 +383,8 @@ int rewair_sflash_erase_range( uint32_t addr, uint32_t size )
  * ap_from_scan_result moved to rewair_wifi_scan.c (Phase 2 Task 10, pure
  * move). Declarations now come from rewair_wifi_scan.h. */
 
-/* Was static; linkage changed to external (Phase 2 Task 10) so
- * rewair_wifi_join.c's moved wifi_join_command_ex can call it (declared in
- * rewair_wifi_join.h; STAYS here -- pure wiced link-state printing, its two
- * other call sites, the console "net" command and network_thread_main,
- * both stay). Body unchanged. */
+/* Shared link-state diagnostics used after a join and by the console "net"
+ * command. */
 void wifi_print_status( void )
 {
     wiced_ip_address_t ip;
@@ -481,28 +481,23 @@ static wiced_result_t network_sync_time_once( uint32_t* utc_seconds_out )
 
 /* Was static; linkage changed to external (Phase 2 Task 10) so
  * rewair_wifi_join.c's moved wifi_join_command_ex can call it (declared in
- * rewair_wifi_join.h; STAYS here). Body unchanged. */
+ * rewair_wifi_join.h; STAYS here). */
 void network_after_ip_ready( void )
 {
     wiced_time_t now_ms = 0u;
     uint32_t utc_seconds = 0u;
 
-    if ( wiced_time_get_time( &now_ms ) == WICED_SUCCESS )
-    {
-        wifi_network_ready_ms = (uint32_t)now_ms;
-    }
-
-    send_netw_up( );
-    wiced_rtos_delay_milliseconds( 20u );
-
     {
         wiced_ip_address_t addr;
         wiced_mac_t mac;
+        wiced_mac_t bssid;
+        uint32_t channel = 0u;
         int32_t rssi = 0;
         char ip_buf[16] = "0.0.0.0";
         char gw_buf[16] = "0.0.0.0";
         char dns_buf[16] = "0.0.0.0";
         char mac_buf[18] = "00:00:00:00:00:00";
+        char bssid_buf[18] = "";
         wiced_config_ap_entry_t* ap = NULL;
         char ssid_buf[33] = "";
 
@@ -521,6 +516,11 @@ void network_after_ip_ready( void )
         {
             mac_to_cstr( &mac, mac_buf );
         }
+        if ( wwd_wifi_get_bssid( &bssid ) == WWD_SUCCESS )
+        {
+            mac_to_cstr( &bssid, bssid_buf );
+        }
+        wwd_wifi_get_channel( WWD_STA_INTERFACE, &channel );
         wwd_wifi_get_rssi( &rssi );
         wiced_rtos_lock_mutex( &dct_wifi_mutex );
         if ( wiced_dct_read_lock( (void**)&ap, WICED_FALSE, DCT_WIFI_CONFIG_SECTION,
@@ -534,7 +534,7 @@ void network_after_ip_ready( void )
         }
         wiced_rtos_unlock_mutex( &dct_wifi_mutex );
         rewair_state_set_wifi_sta( ssid_buf, rssi, ip_buf, gw_buf, dns_buf, mac_buf,
-                                   wifi_dct_saved_count( ) );
+                                   bssid_buf, channel, wifi_dct_saved_count( ) );
     }
 
     rewair_web_api_start( WICED_STA_INTERFACE );
@@ -626,17 +626,18 @@ static void handle_sensor_frame( const sensor_rx_t* rx, uint8_t trailer )
         }
         else if ( cmd4_eq( rx->cmd, "TEST" ) != 0 )
         {
-            printf( "[boot] sensor TEST; no reply, matching stock handler\n" );
+            printf( "[boot] sensor TEST; enabling display and sensor stream\n" );
+            send_sensor_boot_context( );
         }
         else if ( cmd4_eq( rx->cmd, "NETD" ) != 0 )
         {
-            printf( "[boot] sensor NETD; sending NETW up probe\n" );
-            send_netw_up( );
+            printf( "[boot] sensor NETD; ensuring boot context\n" );
+            send_sensor_boot_context( );
         }
         else if ( cmd4_eq( rx->cmd, "NETR" ) != 0 )
         {
-            printf( "[boot] sensor NETR; sending NETW up probe\n" );
-            send_netw_up( );
+            printf( "[boot] sensor NETR; ensuring boot context\n" );
+            send_sensor_boot_context( );
         }
     }
 
@@ -886,25 +887,17 @@ static void sensor_uart_stat( uint32_t status, uint32_t now_ms )
 
 static void sensor_maybe_nudge_boot( uint32_t now_ms )
 {
-    uint32_t ready_ms = wifi_network_ready_ms;
+    uint32_t start_ms = sensor_boot_start_ms;
     uint32_t age_ms;
 
-    if ( sensor_reset_released == 0u || sensor_sens_seen != 0u || ready_ms == 0u )
+    if ( sensor_reset_released == 0u || sensor_sens_seen != 0u || start_ms == 0u )
     {
         return;
     }
 
-    age_ms = (uint32_t)( now_ms - ready_ms );
+    age_ms = (uint32_t)( now_ms - start_ms );
     if ( age_ms < SENSOR_NUDGE_START_MS )
     {
-        return;
-    }
-
-    if ( sensor_disp_clock_canary_sent == 0u )
-    {
-        sensor_disp_clock_canary_sent = 1u;
-        sensor_last_nudge_ms = now_ms;
-        send_disp_clock_canary( );
         return;
     }
 
@@ -922,6 +915,13 @@ static void sensor_maybe_nudge_boot( uint32_t now_ms )
                 (unsigned long)sensor_netw_nudge_count,
                 (unsigned long)SENSOR_NETW_NUDGE_MAX );
         send_netw_up( );
+
+        if ( sensor_disp_clock_canary_sent == 0u )
+        {
+            sensor_disp_clock_canary_sent = 1u;
+            wiced_rtos_delay_milliseconds( 20u );
+            send_disp_clock_canary( );
+        }
     }
 }
 
@@ -989,14 +989,13 @@ static void sensor_thread_main( uint32_t arg )
     }
 }
 
-/* Phase 2 Task 11 sanctioned dedup: sensor_reset_release and
- * sensor_reset_cycle shared an identical boot-state-reset prefix (the 8
- * counter/flag clears + sensor_frame_reset + the GPIO output-mode init).
- * Extracted verbatim into this helper; everything after it (the actual
- * release-vs-pulse GPIO sequencing and the differing log message) stays in
- * the respective callers untouched -- no behavior change. */
+/* Reset the shared boot diagnostics and start the retry clock independently
+ * of Wi-Fi.  The actual release-vs-pulse GPIO sequencing remains in the two
+ * callers below. */
 static void sensor_boot_state_reset( void )
 {
+    wiced_time_t now_ms = 0u;
+
     sensor_boot_context_sent = 0u;
     sensor_sens_seen = 0u;
     sensor_netw_boot_pulses = 0u;
@@ -1005,9 +1004,15 @@ static void sensor_boot_state_reset( void )
     sensor_disp_clock_canary_sent = 0u;
     sensor_raw_trace_count = 0u;
     sensor_raw_trace_reported = 0u;
+    sensor_boot_start_ms = 0u;
     sensor_frame_reset( &sensor_rx );
 
     wiced_gpio_init( AWAIR_SENSOR_RESET, OUTPUT_PUSH_PULL );
+
+    if ( wiced_time_get_time( &now_ms ) == WICED_SUCCESS )
+    {
+        sensor_boot_start_ms = (uint32_t)now_ms;
+    }
 }
 
 static void sensor_reset_release( void )

@@ -10,6 +10,7 @@
 #include "rewair_fmt.h"
 #include "rewair_walltime.h"
 #include "rewair_state.h"
+#include "rewair_settings.h"
 #include "rewair_frame_rx.h" /* SENSOR_PAYLOAD_MAX, shared frame-size limit */
 
 wiced_mutex_t sensor_uart_tx_mutex;
@@ -53,7 +54,7 @@ void frame_append( uint8_t* frame, uint32_t* frame_len, const void* data, uint32
     }
 }
 
-void sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t frame_len )
+wiced_result_t sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t frame_len )
 {
     wiced_result_t result;
 
@@ -61,7 +62,7 @@ void sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t frame_len )
     {
         sensor_uart_tx_drop_count++;
         sensor_uart_wiced_tx_result = WICED_ERROR;
-        return;
+        return WICED_ERROR;
     }
 
     sensor_uart_tx_sr_before = USART2->SR;
@@ -78,22 +79,24 @@ void sensor_uart_send_frame_bytes( const uint8_t* frame, uint32_t frame_len )
     }
 
     wiced_rtos_unlock_mutex( &sensor_uart_tx_mutex );
+    return result;
 }
 
 #define SENSOR_FRAME_MAX ( 1u + 4u + 8u + 1u + SENSOR_PAYLOAD_MAX + 1u )
 
-void sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count )
+wiced_result_t sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count )
 {
     uint32_t payload_len = fields_payload_len( fields, field_count );
     uint8_t frame[SENSOR_FRAME_MAX];
     uint32_t frame_len = 0u;
     char lenbuf[9];
     uint32_t i;
+    wiced_result_t result;
 
     if ( payload_len > SENSOR_PAYLOAD_MAX )
     {
         printf( "[tx drop] %.4s payload too large len=%lu\n", cmd, payload_len );
-        return;
+        return WICED_BADARG;
     }
 
     frame_len_hex( payload_len, lenbuf );
@@ -109,34 +112,30 @@ void sensor_send_frame( const char cmd[4], char** fields, uint32_t field_count )
     }
     frame[frame_len++] = '#';
 
-    sensor_uart_send_frame_bytes( frame, frame_len );
+    result = sensor_uart_send_frame_bytes( frame, frame_len );
 
     printf( "[tx] %.4s len=%lu frame=%lu fields=%lu wiced=%lu/%lu\n",
             cmd, payload_len, frame_len, field_count,
             sensor_uart_wiced_tx_result,
             sensor_uart_wiced_tx_fail_count );
+    return result;
 }
 
 void send_netw_up( void )
 {
     wiced_bool_t link_up = wiced_network_is_up( WICED_STA_INTERFACE );
-    wiced_bool_t network_ready = WICED_FALSE;
     wiced_ip_address_t ip;
     wiced_mac_t mac;
-    uint32_t ipv4 = 0u;
     int32_t rssi = 0;
     char rssi_buf[12];
     char ip_buf[16] = "0.0.0.0";
     char mac_buf[18] = "00:00:00:00:00:00";
-    const char* net_value;
 
-    if ( wiced_ip_get_ipv4_address( WICED_STA_INTERFACE, &ip ) == WICED_SUCCESS )
+    if ( link_up == WICED_TRUE &&
+         wiced_ip_get_ipv4_address( WICED_STA_INTERFACE, &ip ) == WICED_SUCCESS )
     {
-        ipv4 = GET_IPV4_ADDRESS( ip );
         ipv4_to_cstr( &ip, ip_buf );
     }
-    network_ready = ( link_up == WICED_TRUE && ipv4 != 0u ) ? WICED_TRUE : WICED_FALSE;
-    net_value = network_ready == WICED_TRUE ? "1" : "0";
 
     if ( wiced_wifi_get_mac_address( &mac ) == WICED_SUCCESS )
     {
@@ -151,7 +150,12 @@ void send_netw_up( void )
 
     char* fields[] =
     {
-        "net", (char*)net_value,
+        /* The stock F103 treats NETW net=1 as its display/sensor-stream
+         * enable handshake.  It is not merely a report of STA/DHCP state:
+         * net=0 leaves an otherwise useful offline device dark and idle.
+         * Keep the runtime enabled and express unavailable diagnostics with
+         * zero RSSI / 0.0.0.0 until a later NETW refresh after association. */
+        "net", "1",
         "rssi", rssi_buf,
         "ip", ip_buf,
         "mac", mac_buf,
@@ -159,7 +163,7 @@ void send_netw_up( void )
 
     sensor_send_frame( "NETW", fields, (uint32_t)( sizeof( fields ) / sizeof( fields[0] ) ) );
     sensor_netw_boot_pulses++;
-    printf( "[netw] net=%s rssi=%s ip=%s mac=%s\n", net_value, rssi_buf, ip_buf, mac_buf );
+    printf( "[netw] net=1 rssi=%s ip=%s mac=%s\n", rssi_buf, ip_buf, mac_buf );
 }
 
 void send_tinf_from_rule( const rewair_tz_rule_t* rule, uint32_t year )
@@ -266,8 +270,20 @@ wiced_result_t sensor_send_disp_mode( const char* mode )
         protocol_mode = status.units != 0u ? "temp_humid_f" : "temp_humid_c";
     }
     fields[1] = (char*)protocol_mode;
-    sensor_send_frame( "DISP", fields, 2u );
-    return WICED_SUCCESS;
+    return sensor_send_frame( "DISP", fields, 2u );
+}
+
+wiced_result_t sensor_send_sleep_mode( uint8_t mode )
+{
+    static const char* mode_names[] = { "dim", "on", "sleep" };
+    char* fields[] = { "mode", NULL };
+
+    if ( mode > REWAIR_SLEEP_SLEEP )
+    {
+        return WICED_BADARG;
+    }
+    fields[1] = (char*)mode_names[mode];
+    return sensor_send_frame( "SLEP", fields, 2u );
 }
 
 void sensor_apply_manual_time( uint32_t epoch )

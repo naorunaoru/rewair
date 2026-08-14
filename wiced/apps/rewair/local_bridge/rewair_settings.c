@@ -12,6 +12,7 @@ static void set_defaults( rewair_settings_t* s )
     memset( s, 0, sizeof( *s ) );
     s->magic = REWAIR_SETTINGS_MAGIC;
     strcpy( s->name, "Rewair" );
+    s->sleep_mode = REWAIR_SLEEP_UNKNOWN;
     strcpy( s->tz_posix, "WET0WEST,M3.5.0/1,M10.5.0" );
     strcpy( s->tz_zone, "Europe/Lisbon" );
 }
@@ -26,7 +27,8 @@ void rewair_settings_load( rewair_settings_t* out )
         set_defaults( out );
         return;
     }
-    if ( stored->magic != REWAIR_SETTINGS_MAGIC )
+    if ( stored->magic != REWAIR_SETTINGS_MAGIC &&
+         stored->magic != REWAIR_SETTINGS_MAGIC_LEGACY )
     {
         set_defaults( out );
     }
@@ -36,6 +38,20 @@ void rewair_settings_load( rewair_settings_t* out )
         out->name[sizeof( out->name ) - 1u] = '\0';
         out->tz_posix[sizeof( out->tz_posix ) - 1u] = '\0';
         out->tz_zone[sizeof( out->tz_zone ) - 1u] = '\0';
+
+        /* RWR2 reserved this byte as a zero-filled pad, so it cannot tell us
+         * which persistent SLEP mode the stock F103 currently holds. Keep all
+         * other settings, but report the display policy as unknown until the
+         * user explicitly selects one in the web UI. */
+        if ( stored->magic == REWAIR_SETTINGS_MAGIC_LEGACY )
+        {
+            out->magic = REWAIR_SETTINGS_MAGIC;
+            out->sleep_mode = REWAIR_SLEEP_UNKNOWN;
+        }
+        else if ( out->sleep_mode > REWAIR_SLEEP_UNKNOWN )
+        {
+            out->sleep_mode = REWAIR_SLEEP_UNKNOWN;
+        }
     }
     wiced_dct_read_unlock( stored, WICED_FALSE );
 }
@@ -72,5 +88,6 @@ void rewair_settings_apply_to_state( const rewair_settings_t* s )
         rewair_tz_eval( &rule, (uint32_t)now, &offset_min, &dst );
     }
     rewair_state_set_settings( s->name, s->units, s->time_mode, s->disp_mode,
+                               s->sleep_mode,
                                s->tz_zone, s->tz_posix, offset_min, dst );
 }

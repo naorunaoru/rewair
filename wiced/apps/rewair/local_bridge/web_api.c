@@ -460,6 +460,7 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
     int len;
     int got;
     int got_disp_mode;
+    int got_sleep_mode;
     uint8_t previous_units;
     wiced_utc_time_t now = 0u;
 
@@ -553,6 +554,30 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
         }
     }
 
+    got = rewair_req_get_string( body, (uint32_t)len, "sleep_mode", text, sizeof( text ) );
+    got_sleep_mode = got;
+    if ( got == 1 )
+    {
+        if ( strcmp( text, "dim" ) == 0 )
+        {
+            settings.sleep_mode = REWAIR_SLEEP_DIM;
+        }
+        else if ( strcmp( text, "on" ) == 0 )
+        {
+            settings.sleep_mode = REWAIR_SLEEP_ON;
+        }
+        else if ( strcmp( text, "sleep" ) == 0 )
+        {
+            settings.sleep_mode = REWAIR_SLEEP_SLEEP;
+        }
+        else
+        {
+            api_send_error( stream, HTTP_HEADER_400,
+                            "sleep_mode must be dim, on, or sleep" );
+            return 0;
+        }
+    }
+
     /* Validate tz_posix (if present) before any hardware side effects below,
      * so a 400 here never leaves the disp/tz state half-applied. */
     {
@@ -590,7 +615,11 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
         }
     }
 
-    rewair_settings_save( &settings );
+    if ( rewair_settings_save( &settings ) != 0 )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "settings save failed" );
+        return 0;
+    }
     rewair_settings_apply_to_state( &settings );
     if ( got_disp_mode == 1 ||
          ( settings.units != previous_units && settings.disp_mode == 2u ) )
@@ -603,6 +632,12 @@ static int32_t api_settings_handler( const char* url, wiced_http_response_stream
          * before the F103 command is emitted. A unit-only change also needs
          * this refresh while the aggregate Sensors mode remains selected. */
         (void)sensor_send_disp_mode( display_mode );
+    }
+    if ( got_sleep_mode == 1 &&
+         sensor_send_sleep_mode( settings.sleep_mode ) != WICED_SUCCESS )
+    {
+        api_send_error( stream, HTTP_HEADER_500, "display command failed" );
+        return 0;
     }
     api_send( stream, HTTP_HEADER_204, "application/json", "", 0u );
     return 0;
