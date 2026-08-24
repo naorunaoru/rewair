@@ -71,7 +71,7 @@ To restore the complete internal-and-external backup:
 
 ```sh
 STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
-  tools/recovery/restore_stock_emw3165.zsh ../dumps/my-element-stock
+  tools/recovery/restore_stock_emw3165.zsh ../dumps/my-awair-v1-stock
 ```
 
 ## Console Commands
