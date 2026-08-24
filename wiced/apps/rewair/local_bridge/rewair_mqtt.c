@@ -581,7 +581,7 @@ static int mqtt_control_discovery_publish( uint8_t clear )
             "\"entity_category\":\"config\","
             "\"availability_topic\":\"%s\","
             "\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
-            "\"manufacturer\":\"Rewair\",\"model\":\"Awair Element\","
+            "\"manufacturer\":\"Rewair\",\"model\":\"Awair V1\","
             "\"sw_version\":\"%s\"},"
             "\"origin\":{\"name\":\"Rewair\",\"sw_version\":\"%s\"}}",
             control->name, unique_id, escaped_command_topic, escaped_state_topic,
@@ -647,7 +647,7 @@ static int mqtt_discovery_publish( uint8_t clear )
             "\"state_topic\":\"%s\",\"value_template\":\"{{ value_json.%s }}\","
             "\"availability_topic\":\"%s\",\"state_class\":\"measurement\"%s%s,"
             "\"device\":{\"identifiers\":[\"%s\"],\"name\":\"%s\","
-            "\"manufacturer\":\"Rewair\",\"model\":\"Awair Element\","
+            "\"manufacturer\":\"Rewair\",\"model\":\"Awair V1\","
             "\"sw_version\":\"%s\"},"
             "\"origin\":{\"name\":\"Rewair\",\"sw_version\":\"%s\"}}",
             sensor->name, unique_id, escaped_state_topic, sensor->state_key,

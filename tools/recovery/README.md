@@ -13,7 +13,7 @@ CMSIS-DAP probe. Use that loader to capture both memories:
 
 ```sh
 STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
-  tools/recovery/backup_stock_emw3165.zsh ../dumps/my-element-stock
+  tools/recovery/backup_stock_emw3165.zsh ../dumps/my-awair-v1-stock
 ```
 
 The backup directory contains:
@@ -49,7 +49,7 @@ There is no stock image bundled in this repository. A suggested layout is:
 ```text
 awair/
   rewair/                                   (this repo)
-  dumps/my-element-stock/                     (your backup, outside the repo)
+  dumps/my-awair-v1-stock/                    (your backup, outside the repo)
     f411-internal-flash.bin
     external-spi-flash.bin
   third_party/wiced-emw3165/
@@ -62,7 +62,7 @@ experimental flashing. Rewair does not provide a replacement stock image.
 
 ```sh
 STUB_IMAGE=/path/to/rewair-sflash-loader.bin \
-  tools/recovery/restore_stock_emw3165.zsh ../dumps/my-element-stock
+  tools/recovery/restore_stock_emw3165.zsh ../dumps/my-awair-v1-stock
 ```
 
 The `STUB_IMAGE` can be the `rewair-sflash-loader.bin` included in a release

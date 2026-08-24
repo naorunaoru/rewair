@@ -1,6 +1,6 @@
 # Rewair
 
-Bring an original Awair Element back to life with local, open firmware.
+Bring an Awair V1 back to life with local, open firmware.
 
 Rewair replaces the firmware on the device's Wi-Fi module while keeping its
 original sensors and display. Everything runs locally, including a small web
